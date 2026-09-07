@@ -147,11 +147,11 @@ TEST_CASE("setPan past the last light is ignored") {
 }
 
 // The two SHIPPED motion scripts, run on a real head rig. They are the reference a user reads to
-// learn setPan/setTilt, so "it compiles" is not enough: aim.mle must put every head where its
-// sliders say, and sweep.mle must actually move them and differ between formations.
-TEST_CASE("aim.mle points every head where its sliders say") {
+// learn setPan/setTilt, so "it compiles" is not enough: mh-aim.mle must put every head where its
+// sliders say, and mh-sweep.mle must actually move them and differ between formations.
+TEST_CASE("mh-aim.mle points every head where its sliders say") {
     HeadRig rig;
-    rig.effect.setScript(shipScript("aim.mle"));
+    rig.effect.setScript(shipScript("mh-aim.mle"));
     rig.layouts.applyState();
     rig.layer.applyState();
     platform::setTestNowMs(1);
@@ -169,10 +169,10 @@ TEST_CASE("aim.mle points every head where its sliders say") {
     CHECK(rig.channel(0, rig.fc.pan) == 128);
 }
 
-TEST_CASE("sweep.mle moves the rig and its formations differ") {
+TEST_CASE("mh-sweep.mle moves the rig and its formations differ") {
     auto aimsFor = [](uint8_t formation) {
         HeadRig rig;
-        rig.effect.setScript(shipScript("sweep.mle"));
+        rig.effect.setScript(shipScript("mh-sweep.mle"));
         rig.layouts.applyState();
         rig.layer.applyState();
         // A scripted control is set by name, the same path the UI takes.

@@ -768,15 +768,44 @@ bool http_fetch_to_ota(const char* url,
 bool otaWriteStream(FsWriteSrc src, void* user, size_t contentLen,
                     char* statusBuf, size_t statusBufLen, uint32_t* bytesReadOut);
 
-// MOONBASE, the second boot image, present only on tables that carry a factory app (the 4 MB
-// boards): a small, rarely changing firmware that owns the device when the application is not
-// running or cannot be trusted. Its first job is installing firmware into the one large app slot,
+// MOONBASE, the second boot image, present only on tables that carry a factory app (forced on a
+// 4 MB board, chosen on the larger ones): a small, rarely changing firmware that owns the device
+// when the application is not running or cannot be trusted. Its first job is installing firmware into the one large app slot,
 // since a board cannot rewrite the partition it is executing from, so an update there is two
 // stages: otaBootMoonBase() + reboot, then install from MoonBase.
 // All of these are false / no-ops on a dual-OTA table and on desktop.
 bool otaHasMoonBase();      // does this table carry MoonBase?
 bool otaBootMoonBase();     // point the bootloader at it; false when there is none
 bool otaRunningMoonBase();  // are we executing from it right now?
+// Which MoonBase is installed, read from the factory partition's app descriptor without booting
+// it. False when there is no MoonBase or the image carries no readable descriptor. The string is
+// comparable with mm::kVersion: both come from the same computed version.
+bool otaMoonBaseVersion(char* out, size_t len);
+// The rest of the same descriptor, so the UI can show MoonBase's identity the way it shows the
+// app's: when it was built, and how much of its slot it fills.
+bool otaMoonBaseBuild(char* out, size_t len);
+bool otaMoonBaseSize(uint32_t* used, uint32_t* total);
+// Install a new MOONBASE, the inverse of MoonBase installing the app: the factory partition is
+// writable only while the app is running, exactly as the app slot is only while MoonBase runs.
+// Without this a device whose recovery image is broken needs a cable.
+//
+// Same producer-callback shape as otaWriteStream, and the same status vocabulary, with two
+// differences that matter. It VETS the first chunk (magic, chip id, and that the image really is
+// MoonBase) before erasing anything, so a wrong URL costs nothing. And it does NOT reboot: the
+// running app is untouched, and the new image is simply what the device falls back to next.
+//
+// SYNCHRONOUS, and it blocks the caller for the whole erase and write: no-reboot does not mean
+// non-blocking. Called from an HTTP handler on the render task, so the lights hold still for the
+// duration, the same as the app's own upload path. False on desktop, which has no factory slot.
+bool otaWriteMoonBase(FsWriteSrc src, void* user, size_t contentLen,
+                      char* statusBuf, size_t statusBufLen, uint32_t* bytesReadOut);
+// The same install from a URL rather than an upload: the device fetches the image itself, which
+// is what lets it take a release asset straight from GitHub. Runs on its OWN TASK and returns at
+// once, like the app's URL install: while the request is open the browser cannot poll, so a
+// synchronous install could only ever report "installing" and then "installed", with no progress
+// in between. Nothing reboots, so the caller answers 202 and the UI follows the status.
+bool otaFetchMoonBaseUrl(const char* url, char* statusBuf, size_t statusBufLen,
+                         uint32_t* bytesReadOut, uint32_t* bytesTotalOut);
 // Stage an install URL for MoonBase to pick up on its next boot (NVS namespace "moonbase",
 // key "url", at most 255 bytes: MoonBase reads it into a 256-byte buffer and the HTTP route
 // rejects anything longer). This is what makes a URL install unattended: the app stages the URL, reboots into

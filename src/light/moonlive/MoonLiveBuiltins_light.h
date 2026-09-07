@@ -385,7 +385,9 @@ struct CoordSink { CoordFn fn = nullptr; void* ctx = nullptr; };
 using PalFn = void (*)(void* ctx, uint8_t index, uint8_t r, uint8_t g, uint8_t b);
 struct PalSink { PalFn fn = nullptr; void* ctx = nullptr; };
 
-enum class MotionAxis : uint8_t { Pan = 0, Tilt = 1 };
+/// The five fixture roles, in the order FixtureChannels declares them. One sink and one host
+/// function serve all of them, which is why the enum grows rather than each role adding its own.
+enum class MotionAxis : uint8_t { Pan = 0, Tilt = 1, Zoom = 2, Rotate = 3, Gobo = 4 };
 using MotionFn = void (*)(void* ctx, MotionAxis axis, uint32_t index, uint8_t value);
 struct MotionSink { MotionFn fn = nullptr; void* ctx = nullptr; };
 
@@ -997,7 +999,7 @@ extern "C" inline uint32_t mm_light_onBeat(const uintptr_t*, uint32_t, const uin
     return a->level > a->levelSmoothed + kBeatMargin ? 1 : 0;
 }
 
-/// setPan(index, value) / setTilt(index, value) → aim one moving head.
+/// setPan / setTilt / setZoom / setRotate / setGobo (index, value) → aim and shape one head.
 ///
 /// A NO-OP when the light carries no such channel, which is the property that lets one script run
 /// on a moving head and on an LED strip: the strip has no pan channel, nothing is written, and the
@@ -1008,23 +1010,32 @@ extern "C" inline uint32_t mm_light_onBeat(const uintptr_t*, uint32_t, const uin
 /// from the layer's fixture channel map, and the engine has no notion of one. Motion is written
 /// once per HEAD per frame where color is written per pixel, so the per-call cost is not on the
 /// same path as setRGB's.
-extern "C" inline uint32_t mm_light_set_pan(const uintptr_t* args, uint32_t, const uint8_t*) {
+/// The one body all five role builtins share: they differ only in which axis they name, and five
+/// copies of this would be five places for the byteArg rule below to rot.
+///
+/// byteArg, not a raw widen: a script computing an aim below zero (pan - 50 past the end)
+/// reinterprets as a huge unsigned here and clamps to 255, slamming the head to the OPPOSITE
+/// extreme. byteArg is the one home for the signed reading every other builtin uses.
+inline uint32_t motionWrite(MotionAxis axis, const uintptr_t* args) {
     const MotionSink& m = motionSink();
     if (!m.fn) return 0;
-    // byteArg, not a raw widen: a script computing an aim below zero (pan - 50 past the
-    // end) reinterprets as a huge unsigned here and clamped to 255, slamming the head to the
-    // OPPOSITE extreme. byteArg is the one home for the signed reading every other builtin uses.
-    m.fn(m.ctx, MotionAxis::Pan, uint32_t(args[0]), byteArg(args[1]));
+    m.fn(m.ctx, axis, uint32_t(args[0]), byteArg(args[1]));
     return 0;
 }
+extern "C" inline uint32_t mm_light_set_pan(const uintptr_t* args, uint32_t, const uint8_t*) {
+    return motionWrite(MotionAxis::Pan, args);
+}
 extern "C" inline uint32_t mm_light_set_tilt(const uintptr_t* args, uint32_t, const uint8_t*) {
-    const MotionSink& m = motionSink();
-    if (!m.fn) return 0;
-    // byteArg, not a raw widen: a script computing an aim below zero (pan - 50 past the
-    // end) reinterprets as a huge unsigned here and clamped to 255, slamming the head to the
-    // OPPOSITE extreme. byteArg is the one home for the signed reading every other builtin uses.
-    m.fn(m.ctx, MotionAxis::Tilt, uint32_t(args[0]), byteArg(args[1]));
-    return 0;
+    return motionWrite(MotionAxis::Tilt, args);
+}
+extern "C" inline uint32_t mm_light_set_zoom(const uintptr_t* args, uint32_t, const uint8_t*) {
+    return motionWrite(MotionAxis::Zoom, args);
+}
+extern "C" inline uint32_t mm_light_set_rotate(const uintptr_t* args, uint32_t, const uint8_t*) {
+    return motionWrite(MotionAxis::Rotate, args);
+}
+extern "C" inline uint32_t mm_light_set_gobo(const uintptr_t* args, uint32_t, const uint8_t*) {
+    return motionWrite(MotionAxis::Gobo, args);
 }
 
 /// pool(n) → size this script's particle pool to n particles, and report what it actually got.
@@ -1360,7 +1371,7 @@ inline const BuiltinTable& lightBuiltins() {
     t.add({"flowCurl", 2, false, BuiltinKind::Call, &mm_light_flowCurl, {}});
     t.add({"trailDecay", 1, false, BuiltinKind::Call, &mm_light_trailDecay, {}});
     t.add({"emitTrail", 6, false, BuiltinKind::Call, &mm_light_emitTrail, {}});
-    // setPan(index, value) / setTilt(index, value) → aim a moving head. Calls, not Inline stores:
+    // setPan / setTilt / setZoom / setRotate / setGobo → aim a head. Calls, not Inline stores:
     // the channel offset comes from the layer's fixture map, which the engine cannot see.
     // The audio vocabulary. All return 0 without audio, so a script written for a rig with a
     // microphone still runs on one without: it simply renders nothing rather than failing.
@@ -1377,6 +1388,12 @@ inline const BuiltinTable& lightBuiltins() {
     t.add({"audioBeat", 0, /*returns*/ true, BuiltinKind::Call, &mm_light_onBeat, {}});
     t.add({"setPan", 2, /*returns*/ false, BuiltinKind::Call, &mm_light_set_pan, {}});
     t.add({"setTilt", 2, /*returns*/ false, BuiltinKind::Call, &mm_light_set_tilt, {}});
+    // The rest of the fixture roles, same shape and same no-op-where-absent contract. A head that
+    // carries a zoom, a gobo wheel or a prism is aimed AND shaped from a script, which is what a
+    // moving-head look needs beyond pan and tilt.
+    t.add({"setZoom", 2, /*returns*/ false, BuiltinKind::Call, &mm_light_set_zoom, {}});
+    t.add({"setRotate", 2, /*returns*/ false, BuiltinKind::Call, &mm_light_set_rotate, {}});
+    t.add({"setGobo", 2, /*returns*/ false, BuiltinKind::Call, &mm_light_set_gobo, {}});
     // pool(n)                → size this script's particle pool, from defineControls(). Returns the
     // count actually available, 0 when the allocation failed. See mm_light_pool.
     t.add({"pool", 1, /*returns*/ true, BuiltinKind::Call, &mm_light_pool, {}});

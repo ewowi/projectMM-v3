@@ -33,19 +33,91 @@ Two cross-cutting rules govern every stage, from [CLAUDE.md](../../../CLAUDE.md)
 
 No other hidden hard dependencies: our `EffectBase` + extrude (now 1D-along-Y, matching MoonLight) + `Buffer` already provide the render context.
 
-## Status — verified 2026-08-24
+## Status — verified 2026-09-07
 
-Measured against the tree, not inferred from the stages below.
+Measured against both trees on 2026-09-07 (96 commits after the previous status), by counting
+MoonLight's `name()` declarations against our registered modules and script library. Counts are
+what the trees say, not what the stages below predicted.
+
+| | MoonLight | projectMM | Gap |
+|---|---|---|---|
+| Effects | 88 | 66 compiled + 32 scripted | see below |
+| Modifiers | 9 (+1 template) | 11 | **none: complete, plus 2 of our own** |
+| Layouts | 16 (+1 template) | 17 | **3 absent, all installation-specific** |
+| Drivers | 11 (+1 template) | 17 | **3 absent: DMX in/out, HUB75, IMU** |
 
 | Stage | State |
 |---|---|
-| 1 — Foundations | **shipped.** `src/light/Palette.h` (16-entry CRGBPalette16 model, gradient stops from MoonLight's palettes.h), `src/light/draw.h`, the FastLED-named primitives, GoL re-port. |
-| 2 — Doc model | **not started.** `docs/moonmodules/` is still `core/` + `light/`; no `effects_<library>.md` pages, `check_specs.py` still on the per-module contract. |
-| 3+ — Effect batches | **partial.** 52 effects, 12 modifiers, 18 layouts registered (baseline was ~21 / 5 / 3). 44 MoonLive scripts, a delivery route this plan did not anticipate. |
-| 4 — Modifiers + layouts | **partial**, counted above. |
-| 5 — Moving heads / DMX | **not started**, and the largest remaining gap. No DMX-512 output driver exists; RS-485 is backlog-only ([backlog-light](../../backlog/backlog-light.md#rs-485-dmx-512-wired-output-future-the-physical-dmx-driver)) and the fixture model is marked long-term and **undesigned** ([backlog-light](../../backlog/backlog-light.md#fixture-model-moving-heads-beams-long-term)). Design precedes the driver here. |
+| 1 — Foundations | **shipped.** Palette, draw primitives, the FastLED-named set, GoL re-port. |
+| 2 — Doc model | **shipped, differently.** The per-library `effects_<library>.md` split was NOT built; the catalog is one page per TYPE (`effects.md`, `layouts.md`, `modifiers.md`, `drivers.md`) with a table row per module. That solves the same problem the stage existed for (no per-module explosion) with fewer pages, and `check_specs.py` enforces it. **The stage as written is obsolete: what shipped is better and the ADR's premise (library as a doc split) went unused.** |
+| 3 — Effect batches | **substantially done.** 66 compiled effects and 32 scripted, against a ~21 baseline. |
+| 4 — Modifiers + layouts | **done for modifiers** (all 9 ported). **Layouts: 14 of 16**, the three absent ones being specific installations rather than shapes. |
+| 5 — Moving heads / DMX | **partial, and now the largest gap.** The EFFECT side shipped (`MovingHeadEffect` plus 5 `mh-*.mle` scripts, with pan/tilt/zoom/rotate/gobo reachable from both C++ and script). The TRANSPORT did not: there is still no DMX-512 output driver, and no DMX input. |
 
-**Release positioning (product owner, 2026-08-24):** v4.0.0 ships as the scripting-and-desktop release and does **not** take the MoonLight name. Replacing MoonLight moves to v5.0.0, gated on four things beyond effect breadth: DMX light bars and moving heads (tested on hardware), the LightsControl module reaching maturity, MoonLive palettes, and a documentation pass.
+### What is genuinely missing (2026-09-07)
+
+**Drivers, the real gap.** Three of MoonLight's have no counterpart here:
+
+- **DMX Out** (and **DMX In**). The fixture model, the channel roles and the moving-head effects all
+  landed, so a head can be driven over Art-Net today; what is missing is WIRED DMX-512 over RS-485.
+  Tracked in [backlog-light § RS-485](../../backlog/backlog-light.md), where the analysis notes the
+  channel-mapping half is already solved and what remains is the transport (a UART in RS-485 mode,
+  break/mark timing) plus a physical transceiver. **This is the one Must-class gap for the rename.**
+- ~~**HUB75.**~~ **Out of scope, decided 2026-09-07.** MoonLight drives these panels; projectMM
+  will not. No longer a gap: a choice.
+- **IMU.** Sensor input beyond the microphone. The rename doc already files this as a Could.
+
+**Layouts (3):** `16 Rings`, `SE16`, `LightCrafter16`. Each is one installation's wiring rather than
+a reusable shape. **The product owner owns all three (2026-09-07)**, so they are real parity items
+and each is bench-verifiable once written: a layout is a coordinate iterator, so these are small,
+and the hardware to check them against is on hand.
+
+**Effects: 57 of MoonLight's 88 do not match ours by NAME, but a behavior-by-behavior read of both
+trees puts the real gap at 31.** The other 26 exist here under a different name or in a reduced form:
+
+- **15 covered.** Fixed-Point Canvas Demo is our `FixedPointEffect`, Scrolling Text is `TextEffect`,
+  Noise 2D and Noise Move are two `motion` settings of one `NoiseEffect`, Waterfall and Freq Wave
+  are both `FreqMatrixEffect`, Julia is `fractal.mle`, the Troy / Wowi / Ambient heads are the
+  `mh-*.mle` scripts, and our `VuMetersEffect` is richer than the original.
+- **11 partial**, where something related exists but is meaningfully less: Audio Rings vs
+  `RadialSpectrum` (no per-band ring history), Meteor vs `comet-trail.mle` (no randomized per-pixel
+  trail decay), Drip vs `rain.mle` (no bounce physics), Popcorn vs `Ballpit` (no per-kernel pop),
+  Puddles vs `Blurz`, Noise Fire vs `Fire`, and the Troy / Freq Colors audio-band-to-gobo mapping.
+- **31 absent**, and the shape of that list is the useful finding:
+
+| Theme | Count | Effort |
+|---|---|---|
+| Audio-reactive (Grav*, DJ Light, Freq Map/Pixels, Rocktaves, Ripple Peak, Waverly, Funky Plank) | 11 | A few lines each. Our `AudioFrame` is a SUPERSET of MoonLight's `sharedData`, so these are mechanical. The `Grav*` trio wants one shared ~15-line gravity/peak helper. |
+| Geometric / oscillator (Blackhole, DNA, Frizzles, Oscillate, Radar, Pixel Map, Blink Rainbow) | 7 | A few lines each on `BeatPhase` + `draw::line` + `blur`. Radar wants a ~25-line perimeter walk. |
+| Noise (Phased Noise, Plasmoid) | 2 | A few lines: 1D phase accumulators. |
+| 1D strip (Flow, Police) | 2 | A few lines each. |
+| Fire / volumetric (Spiral Fire) | 1 | Moderate, ~50 lines: a real 3D cone-surface test on the existing `PolarLut`. |
+| Particle agents (Ants) | 1 | Substantial, ~150 lines: a food-gathering agent model with no analogue here. |
+| Content-bound (Mario Test, Moon Man) | 2 | Mario is a few lines on the existing sprite path. **Moon Man is not portable**: it needs M5GFX PNG decoding and an embedded blob. |
+| Other (Heartbeat, FLAudio, and the partials above) | 5 | Heartbeat is a few lines. **FLAudio is not an effect gap but an AUDIO-PIPELINE one**: it visualizes `fl_kick`/`fl_snare`/`fl_bpm`/`fl_vocalConfidence`, fields our analyzer does not produce. |
+
+**So the effect work is mostly small and unblocked.** About 25 of the 31 are few-line ports against
+primitives that already exist; two are genuinely not portable as-is (Moon Man's PNG dependency,
+FLAudio's missing audio fields), and two are real work (Ants, Spiral Fire). Nothing structural
+blocks any of it: the palette, primitives, audio pipeline and draw set all exist.
+
+### The v5.0.0 gates, re-checked
+
+The previous status recorded four gates beyond effect breadth. Two have since shipped:
+
+- **MoonLive palettes — SHIPPED.** The research below is now history rather than a design note: the
+  `setPalEntry`/`setPalEntryHSV` builtins exist, `.mlp` is the palette script kind, and 5 factory
+  palettes ship. The open design questions it lists were answered by the implementation (a palette
+  script is a module ticked by its binding, and the picker lists `.mlp` files from both the user and
+  factory directories). **Keep the section for its record of where the design came from; do not
+  read it as outstanding work.**
+- **DMX light bars and moving heads — HALF.** Effects and the fixture/channel model shipped and are
+  bench-verified over Art-Net; wired DMX output has not. See the driver gap above.
+- **LightsControl maturity — NOT STARTED.** No such module exists. `LightPresetsModule` is the
+  fixture-preset library, a different thing. Still backlogged
+  ([backlog-mixed](../../backlog/backlog-mixed.md)).
+- **Documentation pass — OPEN**, and cheaper than it was: the catalog pages exist and
+  `check_specs.py` keeps them honest, so what remains is a read-through rather than a build-out.
 
 ### MoonLive palettes — how MoonLight does it (research, 2026-08-24)
 
@@ -86,6 +158,55 @@ void loop() {
 
 Checkout note: the MoonLight tree read for this research was at `65869217` (2026-05-26) and may lag upstream; re-fetch before implementing.
 
+## What is left to replace MoonLight (the product owner's decision list)
+
+The question this plan now answers is not "how do we migrate" but "what is still missing before
+projectMM can take the name". Grouped by whether it BLOCKS the rename, on the evidence above.
+
+**Blocking, in the sense that a predecessor user would notice it missing:**
+
+1. **Wired DMX-512 output.** The only Must-class gap. Everything above the wire exists (fixture
+   model, channel roles, moving-head effects, bench-verified over Art-Net); what is missing is the
+   RS-485 transport and a board that carries a transceiver. This is also the item with a hardware
+   dependency, so it has the longest lead time: worth starting before the smaller work.
+2. ~~A decision on HUB75.~~ **DECIDED 2026-09-07: OUT OF SCOPE.** MoonLight drives HUB75 panels and
+   projectMM will not. Recorded here so it stays a decision rather than resurfacing as an unknown.
+
+**Not blocking, and mostly small:**
+
+3. **The 31 absent effects**, of which roughly 25 are few-line ports on primitives that already
+   exist. This is the "does the library feel thin" gate, and at 66 compiled plus 32 scripted against
+   MoonLight's 88 it is arguably already met on count. Worth picking the ones that close CATEGORY
+   gaps a user would feel (the audio-reactive eleven) rather than working the list top to bottom.
+4. **The 11 partials**, each a refinement of something that already works.
+5. **Three layouts** (`16 Rings`, `SE16`, `LightCrafter16`), each one installation's wiring.
+   **The product owner owns this hardware (2026-09-07), so all three are real parity items** rather
+   than speculative ports, and each can be verified on the bench once written.
+6. **LightsControl**, the one v5 gate that has not started. Still a backlog design question.
+7. **DMX In and IMU**, both filed as Could in the rename doc and unchanged by this review.
+
+**Moon Man is NOT portable as-is**: it needs M5GFX PNG decoding plus an embedded image blob.
+
+**FLAudio is an audio-pipeline question, not an effect one**, and it splits cleanly. It draws nine
+columns; four are already expressible with what we have, five are not:
+
+- **Already ours.** Bass / mid / treble levels are aggregates of our `bands[]`. Its beat flag and
+  beat confidence are our `onset` and `flux`, where `onset` is arguably better: it fires on the one
+  block a hit is detected rather than staying latched.
+- **Per-instrument onsets** (`kick`, `snare`, `tom`, `hihat`): spectral flux computed PER FREQUENCY
+  REGION rather than across the whole spectrum, plus a per-drum debounce. Textbook, and the per-band
+  data it needs already exists. **Worth building on its own merit**: per-band onset is a capability
+  many effects would use, not just this one.
+- **BPM**: tempo estimation from inter-onset intervals (autocorrelation over several seconds of
+  history). Real DSP with a memory budget. Useful for anything that locks to tempo; a bigger job.
+- **Vocal detection** (`vocalsActive`, `vocalConfidence`): formant-band energy against the total, a
+  spectral-shape classifier. Highest cost, least reliable, and one effect consumes it.
+  **Recommended: skip**, and let FLAudio ship without those two columns if it ships at all.
+
+**What is already done and no longer needs tracking:** modifiers (all of them, plus two of ours),
+14 of 16 layouts, the palette and primitive foundation, MoonLive palettes, the moving-head effect
+and fixture model, and the doc model (in a better shape than this plan proposed).
+
 ## Stages
 
 ### Stage 1 — Foundations (palette + primitives + GoL re-port)
@@ -106,7 +227,15 @@ The proving-ground stage: build the shared tools, prove them on one hard effect.
 
 Stage-1 exit: palette + primitives compile (-Werror), are unit-tested (each primitive pinned: `beatsin8` range, `inoise8` determinism, `qadd8` saturation, `drawLine` endpoints in 1D/2D/3D), GoL re-port renders correctly + has a scenario, tags legend documented. **No doc explosion yet** (GoL keeps its existing single `.md`; the doc-model change is Stage 2).
 
-### Stage 2 — Doc model: per-library pages  ← next
+### Stage 2 — Doc model: per-library pages  ← SUPERSEDED (see Status)
+
+**What shipped instead is one page per TYPE**, not per library: `effects.md`, `layouts.md`,
+`modifiers.md`, `drivers.md`, each a table of module rows. It solves the doc-explosion problem
+this stage existed for, with four pages rather than a dozen, and `check_specs.py` enforces a
+row per registered module. The plan below is kept as the record of what was considered; the
+per-library page names and the `registerType` remapping it describes were not built and are not
+wanted. [ADR-0015](../../adr/0015-library-is-a-tag-not-a-folder.md)'s conclusion still holds for
+`src`/`assets`/`tests` (library is a tag, not a folder); only its doc-page half went unused.
 
 Before migrating dozens of effects (which would create dozens of `.md`s), switch the doc model. The naming + structure is fixed by the [folder-structure decision](../../adr/0015-library-is-a-tag-not-a-folder.md): **`src`/`assets`/`tests` are `domain/type` folders, flat — library is NOT a folder there**, only a `tags()` emoji; **docs** are the one place library splits, as a **page name** (type-first, underscore-joined, matching how you'd read the folder path): `effects_moonlight.md`, `effects_wled.md`, `effects_projectmm.md`, … (and `modifiers_<lib>.md` etc. only where a library has that type — most libraries are effects-only).
 
@@ -129,11 +258,22 @@ With foundations + doc model in place, migrate MoonLight effects in **themed bat
 
 The batch order below is by dependency/complexity (refine per batch), and **cuts ACROSS the source files** (an audio-reactive batch pulls GEQ3D+PaintBrush from E_MoonModules and the GEQ/Blurz family from E_WLED together) rather than migrating one file at a time — themed batches keep each commit coherent:
 
-- **3a — simple 2D/3D non-audio** (the `E_MoonLight` / `E_WLED` geometric ones: lines, scrolling, lissajous, distortion, starfield…).
-- **3b — palette-heavy** (now that palettes exist: the gradient/noise/plasma family not yet ported).
-- **3c — particle/physics** (bouncing balls, popcorn, blackhole — build on the draw primitives + PRNG).
-- **3d — audio-reactive (♫)** (GEQ, Blurz, Waverly, FreqMatrix… — depend on `AudioModule::latestFrame()`; a shared audio-read helper may be its own small sub-stage).
-- **3e — text/scrolling** (scrolling text needs a font + glyph blitter — its own primitive).
+**Superseded by the 2026-09-07 status: 3a, 3b, 3c and 3e are substantially done.** What remains,
+re-derived from the two trees rather than from the original guess at themes:
+
+- **3d — audio-reactive**, and it is now the LARGEST and CHEAPEST remaining batch: eleven effects
+  (`Grav Center`, `Grav Centric`, `Grav Freq`, `DJ Light`, `Freq Map`, `Freq Pixels`, `Rocktaves`,
+  `Ripple Peak`, `Waverly`, `Funky Plank`, and the `Puddles`/`Puddle Peak` partials). Our
+  `AudioFrame` already exposes more than MoonLight's `sharedData`, so these are mechanical ports on
+  an existing pipeline. The three `Grav*` share one small gravity/peak helper, which is the only new
+  primitive the batch needs. **Recommended next batch if effect breadth is the goal.**
+- **3f — geometric leftovers**: `Blackhole`, `DNA`, `Frizzles`, `Oscillate`, `Radar`, `Pixel Map`,
+  `Blink Rainbow`, `Phased Noise`, `Plasmoid`, `Flow`, `Police`, `Heartbeat`. A few lines each.
+- **3g — the genuinely substantial two**: `Ants` (an agent model with food-gathering rules, no
+  analogue here) and `Spiral Fire` (a 3D cone-surface test on the existing `PolarLut`). Worth their
+  own commit rather than being buried in a batch.
+- **Not portable, do not batch**: `Moon Man` (M5GFX PNG dependency) and `FLAudio` (needs audio
+  fields our analyzer does not produce). See the status section.
 
 ### Stage 4 — Modifiers + layouts migration
 
@@ -141,7 +281,20 @@ The MoonLight modifiers (mirror/tile/kaleidoscope/pinwheel/transpose…) and lay
 
 ### Stage 5 — Moving heads / DMX fixtures (last)
 
-`E_MovingHeads` + fixture layouts + Art-Net moving-head control. Most specialised, fewest dependencies on the rest; deferred to last.
+**Split in two by what actually happened, and only half is left.**
+
+**Done (2026-09):** the fixture model (`FixtureChannels`, the `ChannelRole` vocabulary),
+`MovingHeadEffect` with formations and audio reactivity, the five role setters reachable from
+both C++ and MoonLive scripts (pan, tilt, zoom, rotate, gobo), and five `mh-*.mle` scripts
+carrying MoonLight's Troy / Wowi / Ambient looks. A head is drivable today over Art-Net.
+
+**Left:** the WIRED transport. A DMX-512 output driver over RS-485 (UART, break/mark-after-break
+timing, a transceiver on the board) and, if wanted, DMX input. The channel-mapping half is
+already solved by the per-light channel model, so this is a transport and a hardware question
+rather than a domain one: [backlog-light § RS-485](../../backlog/backlog-light.md) has the
+analysis. **This is the one remaining Must-class item for the rename**, and since 2026-09-07 it is this
+plan's alone: the Release 4 scope plan also listed it, shipped without it, and closed pointing here.
+One home for it now.
 
 ## Riskiest parts
 

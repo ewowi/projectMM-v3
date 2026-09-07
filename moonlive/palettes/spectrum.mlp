@@ -1,5 +1,4 @@
-// Spectrum: the palette IS the room. Each entry takes its brightness from one frequency band, so
-// every effect using this palette reacts to the music without knowing anything about audio.
+// Spectrum: each entry takes its brightness from one frequency band, so the palette IS the room.
 
 class Spectrum {
   byte gain = 100;

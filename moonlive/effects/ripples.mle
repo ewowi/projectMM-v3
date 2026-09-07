@@ -13,17 +13,24 @@ class RipplesEffect {
     addControl("rings", rings, 1, 32); // how tightly the rings pack
   }
 
+  // One source's rings at (x, y): the distance to a source that is itself gliding, turned into a
+  // wave. Naming it also computes each source position ONCE, where the inline form evaluated every
+  // beatsin twice for the same pixel.
+  int wave(int x, int y, int bpmX, int bpmY) {
+    int dx = x - beatsin(bpmX, t, width - 1);
+    int dy = y - beatsin(bpmY, t, height - 1);
+    return scale(sin((dx * dx + dy * dy) * rings * 64), 256);
+  }
+
   void tick() {
     for (int y = 0; y < height; y = y + 1) {
       for (int x = 0; x < width; x = x + 1) {
+        // Two sources on different rates, plus a diagonal sweep: where their rings cross is the
+        // interference the effect is named for.
         setRGB(y * width + x,
-          scale(sin(((x - beatsin(bpm, t, width - 1)) * (x - beatsin(bpm, t, width - 1))
-                   + (y - beatsin(bpm + 4, t, height - 1)) * (y - beatsin(bpm + 4, t, height - 1)))
-                  * rings * 64), 256),
-          scale(sin(((x - beatsin(bpm + 7, t, width - 1)) * (x - beatsin(bpm + 7, t, width - 1))
-                   + (y - beatsin(bpm + 3, t, height - 1)) * (y - beatsin(bpm + 3, t, height - 1)))
-                  * rings * 64), 256),
-          scale(sin((x + y) * rings * 32 + beat(bpm, t)), 256));
+               wave(x, y, bpm, bpm + 4),
+               wave(x, y, bpm + 7, bpm + 3),
+               scale(sin((x + y) * rings * 32 + beat(bpm, t)), 256));
       }
     }
   }

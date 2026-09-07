@@ -85,7 +85,7 @@ Leave **Release** and **Firmware** at their suggested values (the newest stable
 build, and the firmware that matches your device). Tick **Erase chip first** only
 if you're starting clean, switching firmware, or updating a 4 MB classic board
 (esp32 / wrover / eth) from a release before v4.0. That last update must erase:
-its partition layout changed ([MIGRATING](../MIGRATING.md)), and if the device already holds
+its partition layout changed ([MIGRATING](MIGRATING.md)), and if the device already holds
 config you care about, back it up first ("Back up a device's config first" on the
 installer page): erasing wipes WiFi credentials and all settings, and the backup
 brings them back after the flash (its report lists anything it could not carry).
@@ -301,6 +301,43 @@ then add an output: real LED strips on a pin, or send the frame over the network
 That's the whole picture: **layout → layers → drivers**, previewed in 3D, all
 tuned live in your browser. Pick an effect, drag a slider, watch the lights — then
 keep going.
+
+---
+
+### If your device shows MoonBase
+
+**MoonBase** is a small recovery image built into your device. If a firmware update
+is interrupted, or an installed firmware does not start, your device boots MoonBase
+instead of going dark, and its page offers you three ways out:
+
+- **Boot the app** puts you straight back if the firmware is still fine. Try this
+  first: it changes nothing on the device.
+- **From a file** installs a firmware you have already downloaded. Get the
+  `firmware-...bin` matching your device from the
+  [releases page](https://github.com/MoonModules/projectMM/releases).
+- **From a URL** downloads and installs in one step. The releases page gives you a
+  link to each file; paste it here and your device fetches it directly.
+
+Installing takes a few minutes, and the page reports its progress as it downloads.
+Your device reboots into the new firmware on its own when it finishes.
+
+Two things worth knowing. A failed install **stays** in MoonBase rather than
+pretending to have worked, so you can simply try again. And you cannot break a
+device this way: MoonBase is never overwritten by an update, so it is still there
+for the next attempt, including after a power cut in the middle of one.
+
+If your device is not on your network at all, MoonBase opens its own WiFi access
+point and is reachable at **4.3.2.1** once you join it.
+
+MoonBase shows its own version on its page, and your device's Firmware card shows
+which MoonBase it carries. If that version is marked outdated, the same card installs
+a newer one over the network, so keeping the recovery image current needs no cable.
+
+That update runs from the app, because only the running app can write the partition
+MoonBase lives in. So it is a way to keep MoonBase fresh, not a way back from a
+device that will not start: if the app cannot run, or MoonBase itself will not boot,
+that still takes a cable. Your device checks the image first, refusing anything whose
+magic bytes, chip or description say it is not a MoonBase image for this chip.
 
 ---
 

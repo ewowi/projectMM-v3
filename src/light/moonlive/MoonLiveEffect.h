@@ -121,15 +121,20 @@ public:
         moonlive::setFadeSink([](void* ctx, uint8_t amt) {
             if (Layer* l = static_cast<MoonLiveEffect*>(ctx)->layer()) l->fadeToBlackBy(amt);
         }, this);
-        // setPan/setTilt reach the fixture's motion channels, whose offsets live in the layer's
+        // The role setters reach the fixture's motion channels, whose offsets live in the layer's
         // channel map. Routed through EffectBase's own setters, so a script aims a head by exactly
         // the path a compiled effect does, including the no-op on a light that has no such channel.
         moonlive::setMotionSink([](void* ctx, moonlive::MotionAxis axis, uint32_t index,
                                    uint8_t value) {
             auto* self = static_cast<MoonLiveEffect*>(ctx);
             const auto i = static_cast<nrOfLightsType>(index);
-            if (axis == moonlive::MotionAxis::Pan) self->setPan(i, value);
-            else                                   self->setTilt(i, value);
+            switch (axis) {
+                case moonlive::MotionAxis::Pan:    self->setPan(i, value);    break;
+                case moonlive::MotionAxis::Tilt:   self->setTilt(i, value);   break;
+                case moonlive::MotionAxis::Zoom:   self->setZoom(i, value);   break;
+                case moonlive::MotionAxis::Rotate: self->setRotate(i, value); break;
+                case moonlive::MotionAxis::Gobo:   self->setGobo(i, value);   break;
+            }
         }, this);
         // The particle builtins reach this effect's own pool, with the frame scale the binding
         // computed: framerate independence is the system's property, not the script author's.

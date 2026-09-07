@@ -17,14 +17,16 @@ class CrosshairEffect {
 
   void defineControls() { addControl("bpm", bpm, 1, 240); }
 
-  void column() { for (int y = 0; y < height; y = y + 1) { setRGB(y * width + scale(beat(bpm, t), width), 255, 40, 0); } }
-  void tick()   { fill(0, 0, 0); column(); }
+  void column(int cx) { for (int y = 0; y < height; y = y + 1) { setRGB(y * width + cx, 255, 40, 0); } }
+  void tick()         { fill(0, 0, 0); column(scale(beat(bpm, t), width)); }
 }
 ```
 
 These are real calls, not pasted-in text: the callee gets its own frame when it runs, which is what
-lets one helper call another and lets a function recurse. A function takes no arguments yet, so a
-helper is parameterized through the class's members. `effects/crosshair.mle` is the worked example.
+lets one helper call another and lets a function recurse. Arguments are passed BY VALUE, so a
+function that writes a parameter changes its own copy and the caller's variable is untouched.
+`effects/crosshair.mle` is the worked example; `layouts/sixteen-rings.mll` is the one where the
+arguments earn their place, calling one helper sixteen times with different coordinates.
 
 **A script is C++, and a compiler checks that.** Every shipped script compiles under
 `c++ -std=c++20 -fsyntax-only` (`test/python/test_scripts_are_cpp.py`), so the language cannot drift
@@ -168,6 +170,31 @@ working script looks like.
 
 `unit_MoonLiveScripts` compiles every file here, so a script that stops parsing when the language
 changes fails the build rather than waiting to be pasted into a device.
+
+## Editing a shipped script forks it
+
+A device keeps two copies of the library. The ones that ship live in `/.moonlive`; anything you edit
+on the device is saved to `/moonlive`, and **your copy is the one that runs**. That is what makes an
+edit reversible: the original is still there, so the card's delete button becomes a **revert arrow**
+(↺) for a script you have changed, and pressing it brings the shipped version back without needing a
+network.
+
+The cost of that arrangement is that your copy also HIDES later updates to the shipped one, so the
+card says which case it is in. Its status carries one of:
+
+| status | what it means |
+|---|---|
+| (nothing) | the shipped script is running, unedited |
+| `edited copy` | your version is running; the shipped one has not changed since you forked it |
+| `edited copy, shipped one updated` | your version is running, and **the library has a newer one** |
+
+The third is the one to act on: revert to take the new version (losing your changes), or keep yours
+and ignore it. Nothing is decided for you, and nothing overwrites an edit.
+
+Two details worth knowing. Opening a shipped script and saving it **without changing anything**
+creates no copy, so browsing the library cannot accidentally pin a script at today's version. And
+the comparison is against the version you actually forked from, recorded when the fork is made, so
+editing your own copy later does not make an outdated fork look current.
 
 ## Debugging: print
 

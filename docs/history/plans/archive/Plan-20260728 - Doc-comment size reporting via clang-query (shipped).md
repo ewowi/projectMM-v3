@@ -164,7 +164,7 @@ So the host now **emulates** the peripherals rather than declaring itself incapa
 buses with heap memory instead of returning `false`/`nullptr`. `ParallelLedDriver` runs on macOS
 against all three real backends, switchable live.
 
-Recorded as a hard rule in [architecture.md § Platform abstraction](../../architecture.md). Its
+Recorded as a hard rule in [architecture.md § Platform abstraction](../../../architecture.md). Its
 limit is deliberate: timing, wire protocol and pin state are NOT emulated, because faking them
 would let a self-test report on hardware it never touched.
 

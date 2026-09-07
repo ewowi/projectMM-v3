@@ -128,7 +128,7 @@ declared rather than for a buffer to fill, and to time out on stall rather than 
   RISC-V coprocessor-context save on INTERRUPT ENTRY. That is a symptom of something faulting inside
   an ISR context rather than a bug in the kernel itself, and the P4 is the only RISC-V target with a
   coprocessor, which is why no other board shows it. The prior art at
-  [Plan-20260718](../history/plans/archive/Plan-20260718%20-%20MoonI80%20lapping-v2%20clock-oracle%20ring%20(shipped).md)
+  `Plan-20260718 - MoonI80 lapping-v2 clock-oracle ring` (in the plans archive)
   is a DIFFERENT cause with the same panic name (an ISR reading PSRAM while a flash write disabled
   the cache, fixed with a `spi_flash_cache_enabled()` defer guard) and is worth re-reading first:
   the same shape on another ISR would present exactly like this.
@@ -153,7 +153,7 @@ DevicesModule discovers via **passive UDP presence** (UDP 65506) feeding a [`Dev
 - **Live peer state** — a discovered peer's brightness / on-off shown in our list, refreshed by polling its REST `/json` after discovery gives the IP (discovery = UDP/mDNS, state = REST). The read-side complement to the command half.
 - **Non-IP transports (board-gated, far future)** — Tasmota-MQTT / zigbee2mqtt need an MQTT client; **direct Zigbee/Thread** (S31/C6/H2 802.15.4 radio) makes projectMM the *hub itself*, driving bulbs over the mesh with no gateway — the standout differentiator, the biggest lift. Same plugin philosophy, a transport addition + board gate.
 
-Full design + the reasoned transport split: [Plan-20260629 — UDP device discovery + mDNS advertise-only (shipped)](../history/plans/archive/Plan-20260629%20-%20UDP%20device%20discovery%20%2B%20mDNS%20advertise-only%20%28shipped%29.md).
+Full design + the reasoned transport split: `Plan-20260629 - UDP device discovery + mDNS advertise-only` (in the plans archive).
 
 ## MoonBase follow-ups
 
@@ -1073,14 +1073,20 @@ They are **not** CI failures (CI is Debug) and each one inspected so far is a fa
 Not done with the multi-destination/tab-UI merge because 17 warnings across four core files is its own change, not a tail on someone else's.
 
 
-## MoonLive core/platform layering + JIT sdkconfig scoping (CodeRabbit #29, 4 findings)
+## MoonLive core/platform layering + JIT sdkconfig scoping (CodeRabbit #29, 3 findings left)
 
-Four 🟠 Major boundary findings from the PR #29 review are real but each is its own scoped change, not a tail on the ring branch. The Critical sibling (a `cpl<3` overflow guard in the MoonLive effect's `tick`) landed with the branch it was found on; these four are backlogged:
+Four 🟠 Major boundary findings from the PR #29 review are real but each is its own scoped change, not a tail on the ring branch. The Critical sibling (a `cpl<3` overflow guard in the MoonLive effect's `tick`) landed with the branch it was found on.
+
+**One of the four is CLOSED (2026-09-07):** the scenario now uses `PreviewDriver`, the in-process
+sink, instead of `NetworkSendDriver`. Its `tick_us` half was reviewed and DISMISSED rather than
+fixed: a `measure` step asserts nothing, it records, and that recording is what feeds repo-health's
+per-commit performance trend. A reviewer reading the file could not see that; deleting the
+baselines would have blinded the trend to fix nothing. Recorded here so it is not re-raised.
+
+The three that remain:
 
 - **Core includes platform, compiled core in `mm_core`.** `src/core/moonlive/MoonLive.cpp` `#include`s `platform/platform.h` and calls the exec-memory API directly, and the root `CMakeLists.txt` compiles `MoonLive.cpp`/`MoonLiveCompiler.cpp` into `mm_core` and links `mm_core → mm_platform` — violating the header-only-core / no-platform-includes contract both files declare. The runtime exec-memory placement layer wants a core-neutral injected interface (or to move out of `src/core`), so the compiled/platform-dependent surface sits behind `mm_platform` and `mm_core` stays INTERFACE-only. These two are one change (same boundary).
 - **W^X disabled in the board default.** `esp32/sdkconfig.defaults.esp32s3-n16r8` turns off `CONFIG_ESP_SYSTEM_MEMPROT_FEATURE` and enables `CONFIG_HEAP_HAS_EXEC_HEAP` for *every* build on that board, even with no MoonLive effect installed. The JIT genuinely needs a writable-then-executable heap, but that belongs in a dedicated MoonLive/JIT opt-in overlay or an explicit build profile, not the board default — so a stock build keeps memory protection on.
-- **A scenario rides timing + network.** `test/scenarios/light/scenario_modifier_chain.json` carries `tick_us` baselines (host-performance dependent) and routes a modifier-chain-composition test through `NetworkSendDriver` (pulls network-path behavior into a test that is not about the network). It wants an in-process sink and structural assertions so it stays hermetic, per the `test/**` "no timing or network dependence" rule.
-
 ## MoonI80 prime-only ring: no stall backstop (sibling-path gap)
 
 **Found:** 👾 Reviewer, pre-commit on the whole-frame stall fix (2026-07-22).
@@ -1342,7 +1348,7 @@ Lower risk than the RGMII case (six pins rather than twelve, and nothing of ours
 
 ## Input transports: foot pedals, USB game controllers, and MoonLive at the pins (2026-09-01)
 
-`ButtonService` shipped with the [GPIO seam](../history/plans/Plan-20260901%20-%20Input%20services%20and%20the%20GPIO%20seam.md)
+`ButtonService` shipped with the [GPIO seam](../history/plans/Plan-20260901%20-%20Input%20mapping%20and%20scripted%20sensors.md)
 (`gpioInputBegin` / `gpioRead` / `gpioWrite`). It names a target as `Module.control` and writes it
 through `Scheduler::setControl`, so a press and an OSC message are indistinguishable downstream.
 Three follow-ups build on that seam rather than beside it.

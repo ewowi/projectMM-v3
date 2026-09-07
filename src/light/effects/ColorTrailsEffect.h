@@ -18,6 +18,11 @@ namespace mm {
 // effect that runs and one that does not. Reach for the solver when the medium itself is the
 // subject, and for this when the subject is color being carried.
 //
+// The two tiers are Jeff's own arrangement, not our contrast with him: his FlowFields repo carries
+// this separable flow and a full Stam solver (pressure, divergence, vorticity confinement) as
+// sibling flows behind one dispatch table. So "no fluid mechanics" describes THIS flow, not his
+// work.
+//
 // Four pieces, each a power function:
 //
 //   - `inoise16` sampled along one axis fills the two profiles, so the flow drifts and reverses on
@@ -30,10 +35,21 @@ namespace mm {
 // The plane is 16-bit for the reason every transport effect here is: a value multiplied by slightly
 // less than one, many times a second, either dies early or never fades at 8 bits.
 //
-// Credit: Stefan Petrick, whose concept this is, and Jeff (mindful_stone / 4wheeljive), whose
-// ColorTrails in AuroraPortal is the composition it follows, by way of MoonLight:
-// https://github.com/4wheeljive/AuroraPortal/blob/main/src/programs/colorTrails_detail.hpp
+// Credit: Stefan Petrick, whose concept this is (Jeff credits him for the emitter/flow split too),
+// and Jeff (mindful_stone / 4wheeljive), whose ColorTrails is the composition it follows, by way of
+// MoonLight. The work has since moved out of AuroraPortal, where the file this was ported from no
+// longer exists, into its own repo:
+// https://github.com/4wheeljive/FlowFields/blob/main/src/flows/flow_noise.h
+// (the version ported here is AuroraPortal at 91ce0c6861, src/programs/colorTrails_detail.hpp).
 // The separable-noise-advection idea is theirs; the kernels underneath are this project's.
+//
+// Two differences from his, deliberate but worth knowing if output is ever compared. His advection
+// is TWO passes over a temporary: the second samples the already-x-sheared buffer, so the y-shear
+// reads a displaced row. Ours fuses them, reading both offsets from the undisplaced source, which
+// is sequential composition against simultaneous: visually close, a different operator. And he
+// floors the per-line shift at 0.3 to "prevent pure cardinal motion", because a profile passing
+// through zero collapses the flow to a plain horizontal or vertical slide; a low `flow` here can
+// reach that state.
 // @card ColorTrailsEffect.png
 /// Effect: color emitters carried by a flow made of two noise profiles, one per axis.
 class ColorTrailsEffect : public EffectBase {
@@ -54,6 +70,12 @@ public:
     uint8_t size        = 128;  // orbit radius, and the Lissajous figure's reach
     uint8_t mode        = static_cast<uint8_t>(Mode::All);
 
+    /// Which wind carries the color. `Noise` is the separable two-profile flow this effect is
+    /// named for; `Radial` is a current running out from the center (or into it), computed per
+    /// pixel from geometry rather than sampled, so it costs no field and no state.
+    enum class Flow : uint8_t { Noise = 0, Radial, RadialIn };
+    uint8_t flowType = static_cast<uint8_t>(Flow::Noise);
+
     void defineControls() override {
         controls_.addControl("speed", speed, 0, 255);
         controls_.addControl("flow", flow, 0, 255);
@@ -63,6 +85,7 @@ public:
         controls_.addControl("colorSpeed", colorSpeed, 0, 255);
         controls_.addControl("size", size, 0, 255);
         controls_.addSelect("mode", mode, kModes, 4);
+        controls_.addSelect("flowType", flowType, kFlows, 3);
     }
 
     void prepare() override {
@@ -115,14 +138,42 @@ public:
         // The two shears, applied as one advection: a light's source is offset horizontally by its
         // ROW's profile and vertically by its COLUMN's. Doing both in one backward sample is what
         // keeps this to a single pass, where the original takes two and a temporary buffer.
-        const int32_t* xp = xProf_.data();
-        const int32_t* yp = yProf_.data();
-        draw::advect16(dst.data(), src.data(), w, h, d,
-                       [xp, yp](lengthType x, lengthType y, lengthType,
-                                draw::pos_t& vx, draw::pos_t& vy) {
-                           vx = static_cast<draw::pos_t>(yp[y]);
-                           vy = static_cast<draw::pos_t>(xp[x]);
-                       }, draw::Edge::Wrap);
+        const Flow f = static_cast<Flow>(flowType);
+        if (f == Flow::Noise) {
+            const int32_t* xp = xProf_.data();
+            const int32_t* yp = yProf_.data();
+            draw::advect16(dst.data(), src.data(), w, h, d,
+                           [xp, yp](lengthType x, lengthType y, lengthType,
+                                    draw::pos_t& vx, draw::pos_t& vy) {
+                               vx = static_cast<draw::pos_t>(yp[y]);
+                               vy = static_cast<draw::pos_t>(xp[x]);
+                           }, draw::Edge::Wrap);
+        } else {
+            // RADIAL. Every cell moves along the line through the center, so the direction is the
+            // normalized offset from it and needs no field and no state: dividing dx and dy by the
+            // distance is the whole computation. The sign is what makes it a fountain or a drain.
+            //
+            // The edge is CLAMP rather than Wrap, unlike the noise flow: an outward current that
+            // wrapped would pour the rim straight back into the middle and the picture would never
+            // clear. Clamping lets it run off the edge, which is what an outward flow looks like.
+            const int32_t cx = w / 2, cy = h / 2;
+            const int32_t reach = (static_cast<int32_t>(flow) * draw::kSubOne) / 24;
+            const int32_t sign = (f == Flow::Radial) ? 1 : -1;
+            draw::advect16(dst.data(), src.data(), w, h, d,
+                           [cx, cy, reach, sign](lengthType x, lengthType y, lengthType,
+                                                 draw::pos_t& vx, draw::pos_t& vy) {
+                               const int32_t dx = static_cast<int32_t>(x) - cx;
+                               const int32_t dy = static_cast<int32_t>(y) - cy;
+                               // isqrt of the squared distance, floored at 1 so the center cell
+                               // divides by something: it is the one place the direction is
+                               // undefined, and it stays put rather than dividing by zero.
+                               const int32_t r = static_cast<int32_t>(isqrt(
+                                   static_cast<uint32_t>(dx * dx + dy * dy)));
+                               const int32_t rr = r < 1 ? 1 : r;
+                               vx = static_cast<draw::pos_t>((dx * reach * sign) / rr);
+                               vy = static_cast<draw::pos_t>((dy * reach * sign) / rr);
+                           }, draw::Edge::Clamp);
+        }
         front_ = !front_;
         ScratchBuffer<uint16_t>& moved = front_ ? plane_ : scratch_;
 
@@ -133,6 +184,7 @@ public:
 
 private:
     static constexpr const char* kModes[4] = {"All", "Orbital", "Lissajous", "Border"};
+    static constexpr const char* kFlows[3] = {"Noise", "Radial out", "Radial in"};
 
     uint32_t halfLifeMs() const {
         return 20u + static_cast<uint32_t>(persistence) * static_cast<uint32_t>(persistence) / 16u;
@@ -148,16 +200,38 @@ private:
         // The shear scales with the grid: a fixed pixel count is a strong flow on a 16-wide panel
         // and an invisible one on a 256-wide, which is the same reasoning `fShift` carries upstream.
         const int32_t reach = (static_cast<int32_t>(flow) * (w < h ? w : h)) / 220;
+        // BREATHING. Each axis has its own slow multiplier on the shear, so the flow swells and
+        // eases instead of shearing at one rate forever. Jeff's version runs six such channels
+        // (his FlowFields modulator bank); two is the smallest form that gets the effect, because
+        // what sells it is the axes disagreeing, not the channel count. The rates are deliberately
+        // unequal and not a ratio of each other, so the pair never returns to the same phase.
+        //
+        // The DEPTH is bounded so the flow can breathe without stalling: his `minShift` exists
+        // because a profile passing through zero collapses the picture to a plain horizontal or
+        // vertical slide, and a multiplier that reaches zero does the same thing. 40% swing around
+        // 80% keeps it between 0.4 and 1.2 of the set reach.
+        const uint32_t mPhase = (now * static_cast<uint32_t>(flowSpeed)) / 96u;
+        const int32_t xBreath = 205 + (static_cast<int32_t>(sin16(static_cast<uint16_t>(mPhase * 7u))) * 102) / 32768;
+        const int32_t yBreath = 205 + (static_cast<int32_t>(sin16(static_cast<uint16_t>(mPhase * 5u + 21845u))) * 102) / 32768;
+        const int32_t xReach = (reach * xBreath) / 256;
+        const int32_t yReach = (reach * yBreath) / 256;
+        // The axes are detuned in BOTH space and time, which is Stefan's own tuning rather than a
+        // guess: his rig's sliders sit at scale 0.33 against 0.32 and speed -1.73 against -1.72,
+        // near-equal but never equal. Equal rates let the two profiles lock into one pattern and
+        // the picture slides along a diagonal; unequal ones drift through each other, so the flow
+        // keeps rearranging itself. The ratios below are his, in integers: 32/33 and 172/173.
         const uint32_t cells = static_cast<uint32_t>(scale) * 24u;
+        const uint32_t cellsY = (cells * 32u) / 33u;
+        const uint32_t phaseY = (phase * 172u) / 173u;
         for (lengthType x = 0; x < w; x++) {
             const int32_t n = static_cast<int32_t>(inoise16(static_cast<uint32_t>(x) * cells, phase, 0)) - 32768;
-            xProf_[static_cast<size_t>(x)] = (n * reach * draw::kSubOne) / 32768 / 16;
+            xProf_[static_cast<size_t>(x)] = (n * xReach * draw::kSubOne) / 32768 / 16;
         }
         for (lengthType y = 0; y < h; y++) {
             // A different offset into the field, so the two axes are decoupled: one field read for
             // both would rise and fall together and slide the whole picture along a diagonal.
-            const int32_t n = static_cast<int32_t>(inoise16(static_cast<uint32_t>(y) * cells, phase, 32768)) - 32768;
-            yProf_[static_cast<size_t>(y)] = (n * reach * draw::kSubOne) / 32768 / 16;
+            const int32_t n = static_cast<int32_t>(inoise16(static_cast<uint32_t>(y) * cellsY, phaseY, 32768)) - 32768;
+            yProf_[static_cast<size_t>(y)] = (n * yReach * draw::kSubOne) / 32768 / 16;
         }
     }
 

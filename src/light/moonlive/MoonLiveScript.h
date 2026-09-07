@@ -29,7 +29,17 @@ public:
     /// editor the position it marks the failing line from: the errors hardest to read were exactly
     /// the ones that lost their explanation AND their highlight. Public because a unit test pins it
     /// against the compiler's own messages, which is what stops the two drifting apart again.
-    static constexpr size_t kMaxStatus = 72;
+    /// Sized from the WORST line the code can produce, which the status-fits test recomputes from
+    /// the compiler's own diagnostics: the longest message (62), the longer of the two shadow marks
+    /// with its ": " (34), and the machine-read " @<offset>" suffix (8). At 72 the suffix was what
+    /// fell off, and the editor silently stopped marking the failing line.
+    static constexpr size_t kMaxStatus = 112;
+    /// What the status says when the user's copy is hiding a shipped one (`scriptShadowsFactory`).
+    /// One constant because the status-fits test budgets its length against kMaxStatus.
+    static constexpr const char* kShadowMark = "edited copy";
+    /// Said instead of kShadowMark when the shipped copy has moved on since the fork: the one
+    /// sentence that turns "why is my edit being used" into "the library has a newer version".
+    static constexpr const char* kStaleMark = "edited copy, shipped one updated";
 
     /// Let a binding that owns a particle pool size it from the script's defineControls(). Null for
     /// a binding with no particles, which is every binding but the effect today.
@@ -99,6 +109,12 @@ public:
             // the one budget it is closest to using up. The card's memory figure is the ALLOCATION,
             // word-rounded, which says nothing about the program itself.
             engine_.describe(statusBuf_, sizeof(statusBuf_));
+            // Name a SHADOW when there is one, on success as much as on failure: the copy that
+            // compiled is the user's, and a push to the shipped one will change nothing on screen.
+            if (shadowMark()) {
+                const size_t n = std::strlen(statusBuf_);
+                std::snprintf(statusBuf_ + n, sizeof(statusBuf_) - n, ", %s", shadowMark());
+            }
             owner.setStatus(statusBuf_, MoonModule::Severity::Status);
             compileFailed_ = false;
         } else {
@@ -107,9 +123,20 @@ public:
             // control for the number would be a field every non-scripted module carries for nothing.
             // The suffix is machine-read, so it stays a fixed shape rather than a sentence.
             if (engine_.hasErrorPos()) {
-                std::snprintf(statusBuf_, sizeof(statusBuf_), "%s @%u",
-                              err ? err : "compile failed",
-                              static_cast<unsigned>(engine_.errorPos()));
+                // The shadow marker goes in FRONT: the `@<offset>` suffix is machine-read and must
+                // stay last, and the offset only makes sense against the copy that was compiled.
+                // Suffix FIRST, message into what is left: a message too long for the buffer
+                // loses its tail, never the offset the editor parses.
+                char at[12];
+                std::snprintf(at, sizeof(at), " @%u", static_cast<unsigned>(engine_.errorPos()));
+                const size_t room = sizeof(statusBuf_) - std::strlen(at) - 1;
+                const char* mark = shadowMark();
+                int n = std::snprintf(statusBuf_, room + 1, "%s%s%s",
+                                      mark ? mark : "", mark ? ": " : "",
+                                      err ? err : "compile failed");
+                if (n < 0) n = 0;
+                if (static_cast<size_t>(n) > room) n = static_cast<int>(room);
+                std::snprintf(statusBuf_ + n, sizeof(statusBuf_) - static_cast<size_t>(n), "%s", at);
                 owner.setStatus(statusBuf_, MoonModule::Severity::Error);
             } else {
                 owner.setStatus(err, MoonModule::Severity::Error);
@@ -271,6 +298,14 @@ private:
     const char* tags_ = nullptr;
     // Backing store for the status line: MoonModule::setStatus keeps a POINTER, so the text has to
     // outlive the call. The same module-owned pattern NetworkModule uses.
+    /// Which shadow note this script's status should carry, or null when the file being compiled is
+    /// the only copy of it. Asked on every compile (a cold path), and asked ONCE per status line so
+    /// the success and failure branches cannot drift into saying different things.
+    const char* shadowMark() const {
+        if (!moonlive::scriptShadowsFactory(name_)) return nullptr;
+        return moonlive::scriptFactoryMovedOn(name_) ? kStaleMark : kShadowMark;
+    }
+
     char     statusBuf_[kMaxStatus] = {};
     // The script's FILE NAME, inside the shared script directory. Empty on a fresh card: it reports
     // "no script" until one is named, rather than every new module compiling the same default.

@@ -41,6 +41,7 @@ add_executable(mm_tests
     unit/core/unit_ControlModule.cpp
     unit/core/unit_FilesystemModule_subtree.cpp
     unit/core/unit_FirmwareUpdateModule.cpp
+    unit/core/unit_FirmwareImage.cpp
     unit/core/unit_HttpServerModule_apply.cpp
     unit/core/unit_ImprovFrame.cpp
     unit/core/unit_ImprovOpReassembler.cpp
@@ -88,6 +89,7 @@ add_executable(mm_tests
     unit/light/unit_WledAudioSyncPacket.cpp
     unit/light/unit_BlendMap.cpp
     unit/light/unit_BeatRipples.cpp
+    unit/light/unit_ColorTrailsEffect.cpp
     unit/light/unit_fluid.cpp
     unit/light/unit_draw.cpp
     unit/light/unit_GameOfLifeEffect.cpp
@@ -116,7 +118,9 @@ add_executable(mm_tests
     unit/light/unit_DistortionWavesEffect.cpp
     unit/light/unit_Correction.cpp
     unit/light/unit_MovingHeadEffect.cpp
+    unit/light/unit_FixedPointEffect.cpp
     unit/light/unit_Drivers_container.cpp
+    unit/light/unit_Drivers_livePalettes.cpp
     unit/light/unit_Drivers_rendersplit.cpp
     unit/light/unit_LightPresetsModule.cpp
     unit/light/unit_Drivers_firstOutputRgb.cpp

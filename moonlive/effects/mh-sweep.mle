@@ -1,0 +1,47 @@
+// Sweep: the moving-head formations, in script form. MOTION ONLY, no color.
+
+class SweepEffect {
+  byte formation = 0;
+  byte panBpm = 6;
+  byte tiltBpm = 9;
+  byte panRange = 128;
+  byte tiltRange = 96;
+
+  int dimensions() { return 1; }
+
+  string tags() { return "💫🎯"; }
+
+  void defineControls() {
+    addControl("formation", formation, 0, 4); // 0 fan, 1 mirror, 2 chase, 3 cross, 4 unison
+    addControl("panBpm", panBpm, 1, 120); // how fast the heads swing sideways
+    addControl("tiltBpm", tiltBpm, 1, 120); // how fast they swing up and down
+    addControl("panRange", panRange, 0, 255); // how far the sideways swing travels
+    addControl("tiltRange", tiltRange, 0, 255); // how far the vertical swing travels
+  }
+
+  // Aim one head. `spread` delays its sweep, `dir` reverses it: every formation is a choice of
+  // those two per head, which is why they are the only thing the branches below decide.
+  void head(int i, int spread, int dir) {
+    setPan(i, 128 + div((beatsin(panBpm, t + spread, 255) - 128) * dir * panRange, 256));
+    setTilt(i, 128 + div((beatsin(tiltBpm, t + spread, 255) - 128) * tiltRange, 256));
+  }
+
+  void tick() {
+    for (int i = 0; i < height; i = i + 1) {
+      // One line per formation, each saying what it IS rather than which variables it sets.
+      if (formation == 0) { head(i, div(i * 128, height), 1); }        // fan: a widening delay
+      else if (formation == 1) {
+        int half = 1;                                                  // mirror: the halves oppose
+        if (i >= div(height, 2)) { half = 0 - 1; }
+        head(i, 0, half);
+      }
+      else if (formation == 2) { head(i, div(i * 255, height), 1); }   // chase: a travelling wave
+      else if (formation == 3) {
+        int alt = 1;                                                   // cross: neighbours oppose
+        if (mod(i, 2) == 1) { alt = 0 - 1; }
+        head(i, 0, alt);
+      }
+      else { head(i, 0, 1); }                                          // unison: all as one
+    }
+  }
+}

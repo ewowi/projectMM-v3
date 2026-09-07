@@ -291,6 +291,28 @@ network, a stronger power-fail story than dual-OTA's. A failed install deliberat
 MoonBase, visibly, rather than silently reverting to the old app; the way back is its explicit
 "Boot the app" action, which only boots an image that validates.
 
+**Updating MoonBase itself** runs the same cycle backwards: the app writes the factory slot while
+running from `ota_0`, exactly as MoonBase writes the app slot while running from factory. Neither
+image can rewrite the partition it executes from, so each installs the other and the app is the
+only thing that can repair a broken recovery image. Without it a bad MoonBase means a cable, which
+is the failure MoonBase exists to prevent.
+
+Two things make that safe enough to offer. `esp_ota_*` refuses a factory partition, so this is a
+raw `esp_partition_erase_range` + `esp_partition_write`, which also forfeits the validation
+`esp_ota_end` performs: `esp_image_verify` replaces it after the write. And because a 4 MB board
+has nowhere to stage 743 KB before erasing, the image streams straight in, so everything that can
+reject it is decided from its FIRST CHUNK, before a byte is erased: the image magic, the chip id
+(one MoonBase per chip, one paste apart, and a checksum does not catch a swap), and the descriptor
+naming `projectMM-moonbase` rather than the app. Those rules live in `src/core/FirmwareImage.h` so
+a host test can drive them. What remains is a window, during the write, in which the device holds
+no recovery image; the app keeps running throughout, so the answer to a failure is to retry.
+
+Each image reports its version from the app descriptor IDF puts in every binary, `PROJECT_VER`
+being set to the same computed version for both, so the app can read the factory partition's
+version without booting it and say when the two were built apart. A device that cannot name its
+own recovery image cannot be diagnosed: two boards that looked identical, one of which could not
+install firmware, took a bisect of the git log to tell apart.
+
 MoonBase is a standalone ESP-IDF project (`moonbase/`, ~750 KB against an 896 KB slot) sharing
 no sources with the app, the deliberate trade for an image that must stay small and, once
 working, hardly change. `moondeck/build/build_esp32.py` builds it alongside every variant that opts in
@@ -324,7 +346,7 @@ The defining line is the **data relationship, not the connector**: *does the mod
 
 Services are **user-add/deletable children of the `Services` container** — the core-domain twin of the light pipeline's `Effects`/`Drivers`: a top-level container holding user-added children of one role. The firmware is identical whether or not the hardware is wired, so the user adds the module when they solder a gyro on and removes it later, reusing the generic child add/replace/delete + persistence machinery (`Services` declares `acceptsChildRoles("service")`). Fixed device infrastructure (identity, network, the inspection tools Tasks/I2cScan) lives under **System** instead, wired by code, not user-added — that is the System/Services split. Direction is per-module, not a role: a service may read (gyro), write (relay), or both, so one `Service` role spans the category. Each is a header-only or `.h`+`.cpp` core module under `src/core/`, reaches hardware only through a domain-neutral platform primitive (`platform::i2c*`, `platform::audioMic*`, …), and gets a spec in `docs/moonmodules/core/services.md` (enforced by `check_specs.py`). Most poll in `tick20ms`/`tick1s`; the exception is a service whose data an effect consumes *every frame*: [AudioService](moonmodules/core/moxygen/AudioService.md) reads + analyses its I²S microphone in `tick()` because the audio effects react per render tick, and its per-tick cost (one FFT) is part of the render budget. Automatic bus-probe detection is out of scope; the manual path is the foundation.
 
-**An effect reads a service's data** via the shared-struct pull pattern from [§ Data exchange](#data-exchange-between-modules), no new mechanism: the service owns a small POD struct overwritten in place each poll/tick, and the consuming effect holds a `const` pointer to it. The first concrete case is audio: AudioService produces an `AudioFrame` (level + 16-band spectrum + peak) that [AudioVolumeEffect](moonmodules/light/effects.md) and [AudioSpectrumEffect](moonmodules/light/effects.md) consume. It reaches the frame through a static `AudioService::latestFrame()` rather than a boot-time setter, a small variation on the pattern, because an audio effect can be added through the UI *after* boot and must still find the one live mic (a setter only wired the boot instance). The active mic registers itself in `setup()` and clears the pointer in `release()`, so add/remove in any order returns either the live frame or a static silent one, never null. A service that only *displays* its readings (the gyro today) skips the consumer side entirely.
+**An effect reads a service's data** via the shared-struct pull pattern from [§ Data exchange](#data-exchange-between-modules), no new mechanism: the service owns a small POD struct overwritten in place each poll/tick, and the consuming effect holds a `const` pointer to it. The first concrete case is audio: AudioService produces an `AudioFrame` (level + 16-band spectrum + peak) that [AudioSpectrumEffect](moonmodules/light/effects.md) and the other audio effects consume. It reaches the frame through a static `AudioService::latestFrame()` rather than a boot-time setter, a small variation on the pattern, because an audio effect can be added through the UI *after* boot and must still find the one live mic (a setter only wired the boot instance). The active mic registers itself in `setup()` and clears the pointer in `release()`, so add/remove in any order returns either the live frame or a static silent one, never null. A service that only *displays* its readings (the gyro today) skips the consumer side entirely.
 
 ## Multi-device runtime
 

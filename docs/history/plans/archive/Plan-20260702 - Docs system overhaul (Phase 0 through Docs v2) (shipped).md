@@ -34,7 +34,7 @@ but excluded from the published nav. ~104 `docs/install/`→`web-installer/` ref
 projectMM-native), one table row per module. `check_specs.py` moved from file-scoped to **page-scoped**
 control-name validation. Drivers stayed per-file at the time (later folded into `drivers.md` +
 per-driver moxygen pages by Docs v2). Library stays a *tag* + a *doc split*, never a folder axis (the
-[folder-structure decision](../../adr/0015-library-is-a-tag-not-a-folder.md)).
+[folder-structure decision](../../../adr/0015-library-is-a-tag-not-a-folder.md)).
 
 ### Phase 1+2 — nav fold + generated tests in the build
 Phase 1 (audience-split nav) was mostly delivered by Phase 0. Phase 2: the test-inventory pages
@@ -104,5 +104,5 @@ built fresh) from its `.h` `///` comments; each catalog summary row links to it.
 - **Doxide** — abandoned (above); moxygen delivered the goal.
 - **Per-library page splits** (`effects_wled.md`) — future growth, a lift-not-rewrite when a library
   section outgrows its page; the flat filenames + sections are already in place for it.
-- **assets/ and test/ type-splits** — the [folder-structure decision](../../adr/0015-library-is-a-tag-not-a-folder.md)'s
+- **assets/ and test/ type-splits** — the [folder-structure decision](../../../adr/0015-library-is-a-tag-not-a-folder.md)'s
   remaining "mirror src's domain/type shape" work; independent of the doc-content overhaul.

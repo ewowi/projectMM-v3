@@ -1,6 +1,6 @@
 # Plan — Stage 1 primitive library (math8 + noise + draw + blend)
 
-The remaining foundation of [MoonLight migration Stage 1](./Plan-20260630%20-%20MoonLight%20migration%20(multi-stage).md) (palette + tags-legend already shipped in `d00559c`). Builds the shared, hot-path-tuned integer primitives every migrated effect (Stage 3+) will call, so each effect stays short by leaning on one recognisable set instead of re-rolling beat/noise/blend/draw per effect.
+The remaining foundation of [MoonLight migration Stage 1](../Plan-20260630%20-%20MoonLight%20migration%20%28multi-stage%29.md) (palette + tags-legend already shipped in `d00559c`). Builds the shared, hot-path-tuned integer primitives every migrated effect (Stage 3+) will call, so each effect stays short by leaning on one recognisable set instead of re-rolling beat/noise/blend/draw per effect.
 
 **Prior art:** FastLED — the canonical 8-bit-fixed-point LED library. We carry its *ideas and recognisable names* (`beatsin8`, `inoise8`, `qadd8`, `nscale8`, `random8`, `fadeToBlackBy`, `blend`) and write our own implementation against our architecture, crediting FastLED at each file's header. FastLED's own split is the model: `lib8tion` (math+timing+random), `noise` (inoise), `colorutils` (blend/fade), `hsv2rgb` (color) — draw/Bresenham lives in its 2D/matrix add-ons, not core.
 

@@ -45,10 +45,19 @@ public:
     // Wiring order: false = light 0 at the center, rings outward (MoonLight's
     // order); true = light 0 on the outer ring, rings inward.
     bool outside_in = false;   // "outside in"
+    // Where light 0 of each ring sits, in degrees from the bottom. Named for
+    // RingLayout's control of the same meaning, NOT `rotation`: that word is
+    // taken in this family for the arc a partial ring spans, and one word with
+    // two meanings across two ring layouts is worse than a longer name. A disc
+    // is soldered with its first LED wherever the builder started, so without
+    // this the image is fixed against the hardware. 0 keeps MoonLight's
+    // placement, which is why it is the default.
+    uint16_t angleFirst = 0;
 
     void defineControls() override {
         controls_.addControl("scale", scale, 1, 10);
         controls_.addControl("outside in", outside_in);
+        controls_.addControl("angleFirst", angleFirst, 0, 359);
     }
 
     nrOfLightsType lightCount() const override {
@@ -79,10 +88,14 @@ public:
                 float x = static_cast<float>(scale * leftMargin);
                 float y = static_cast<float>(scale * leftMargin);
                 if (n != 1) {
-                    // angleFirst = 0, so RingLayout's angleRad = π + 2π·i / n.
+                    // RingLayout's angleRad = π + 2π·i / n + 2π·angleFirst / 360.
                     // Formed in double (MoonLight's PI/TWO_PI are double macros),
-                    // then narrowed to float for the float sinf/cosf below.
-                    const float angleRad = static_cast<float>(kPi + (kTwoPi * static_cast<double>(i)) / static_cast<double>(n));
+                    // then narrowed to float for the float sinf/cosf below. The
+                    // angleFirst term rides in the same double expression so an
+                    // angleFirst of 0 is bit-identical to MoonLight's placement.
+                    const float angleRad = static_cast<float>(
+                        kPi + (kTwoPi * static_cast<double>(i)) / static_cast<double>(n)
+                            + (kTwoPi * static_cast<double>(angleFirst)) / 360.0);
                     x -= scale * std::sin(angleRad) * radius;
                     y += scale * std::cos(angleRad) * radius;
                 }

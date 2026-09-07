@@ -20,7 +20,17 @@ Decided once; not re-derived per file.
 - **Consider extending before creating.** When adding a feature, check whether an existing module extends cleanly; a new file is fine if genuinely cleaner, but justify it.
 - **Do not remove comments** unless they are outdated or factually wrong. Comments document intent and context; removing them silently loses knowledge.
 - **Reference, don't copy.** Prior art (friend repos, datasheets, our own prototype branches) holds proven approaches: study it, take the ideas, write our own code, never copy or trace the structure. Credits live in the [friend-repo digests](friend-repos/README.md) and per-module prior-art sections.
-- **Minimal comments in MoonLive scripts.** A `.mle`/`.mll`/`.mlm` is a user-facing artifact shown in an editor on the device's own card, not a C++ source file: the reader is looking at the effect, and a comment block longer than the code buries it. One or two lines at the top saying what the effect IS, and a short note only where a line would otherwise read as a mistake. Everything else, the reasoning behind a formulation, the measured numbers, the language limits it works around, belongs in the commit message or the roadmap. This is the one place the "do not remove comments" rule above yields: on these files, trim.
+- **Minimal comments in MoonLive scripts, in exactly three places.** A `.mle`/`.mll`/`.mlm`/`.mls`/`.mlp` is a user-facing artifact shown in an editor on the device's own card, not a C++ source file: the reader is looking at the effect, and a comment block longer than the code buries it. So the budget is fixed, and it is one line each:
+
+    | where | what it says |
+    |---|---|
+    | **one line at the top** | what the script IS, in a phrase a user would recognize |
+    | **one line after each `addControl`** | what that knob does, from the user's side |
+    | **one line before each function the script defines itself** | what that helper does, so a reader need not decode it |
+
+    The third is the one to get right as scripts grow helpers: a named function is a promise about what it does, and the line is where that promise is written. Lifecycle functions (`tick`, `defineControls`, `placeLights`, `modifyLogical`, …) need no line: their names are the contract and the reader already knows them.
+
+    Everything else, the reasoning behind a formulation, the measured numbers, the language limits it works around, belongs in the commit message or the roadmap. This is the one place the "do not remove comments" rule above yields: on these files, trim.
 - **Present-tense litmus.** "There is no MCLK pin" states a property (keep); "no X anymore" narrates a removal (cut it; describe the path that exists).
 
 ## Prefer integers, store values in their native shape
@@ -198,7 +208,7 @@ Two corollaries. **Reference a module generically** in prose outside its own hom
    - `light/{effects,modifiers,layouts,drivers,supporting}.md` — the light-catalog + light-supporting pages (a type may later split by library into `effects_wled.md` / `effects_moonmodules.md`, still flat).
    - `core/{services,supporting,ui}.md` — the core-services (user-facing modules), core-supporting, and web-UI summary pages.
 
-   **The Links column** is assembled by the hook in a fixed order — **🧪 Tests · 📄 Technical · attribution · ⌄ details** — each with a Material icon (`:material-…:`, rendered as inline SVG by `pymdownx.emoji`, the same mechanism as the tag emoji in the Name column) so a link's *type* is scannable. A card carries these lines: a `[Tests](../../../tests/unit-tests.md#<anchor>)` line (omitted when the module has no unit test — a missing Tests link truthfully means "untested"), a **`Detail: [technical](../moxygen/<Stem>.md)`** line pointing at the generated technical page, and an `Origin:` attribution line. `check_specs` matches each block to its `.h` via that `moxygen/<Stem>.md` link, so keep the link's target on it.
+   **The Links column** is assembled by the hook in a fixed order (**🧪 Tests · 📄 Technical · attribution · ⌄ details**), each with a Material icon (`:material-…:`, rendered as inline SVG by `pymdownx.emoji`, the same mechanism as the tag emoji in the Name column) so a link's *type* is scannable. A card carries these lines: a `[Tests](../../tests/unit-tests.md#<anchor>)` line (omitted when the module has no unit test, so a missing Tests link truthfully means "untested"), a **`Detail: [technical](../moxygen/<Stem>.md)`** line pointing at the generated technical page, and an `Origin:` attribution line. `check_specs` matches each block to its `.h` via that `moxygen/<Stem>.md` link, so keep the link's target on it.
 
    Cross-file design rationale that no single `.h` owns (module interactions, buffer-lifecycle coupling) is a prose section beneath a summary page's table — a `## <Name> — details` section the hook links from the row as `⌄ details`. That's the only home for it, so a module needs no page of its own.
 

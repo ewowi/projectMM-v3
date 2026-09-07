@@ -1,5 +1,4 @@
-// Beat flash: the palette sits in a deep color and jumps to white on every drum hit, so any effect
-// using it pulses with the room. Decays between beats rather than snapping back.
+// Beat flash: a deep color that jumps to white on every drum hit, then decays back.
 
 class BeatFlash {
   byte hue = 160;

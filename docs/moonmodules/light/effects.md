@@ -29,7 +29,7 @@ Three emitters feed it: circles on an orbit, a Lissajous point tracing a figure 
 
 Compare with [Fluid](#fluid): that one solves for pressure and gets vortices forming out of the flow's own history, at roughly twenty passes over the grid against this one's one. Reach for the solver when the medium is the subject, and for this when the subject is the color being carried.
 
-Origin: MoonLight · concept by [Stefan Petrick](https://github.com/StefanPetrick), composition by Jeff (mindful_stone / [4wheeljive](https://github.com/4wheeljive)) in [AuroraPortal](https://github.com/4wheeljive/AuroraPortal/blob/main/src/programs/colorTrails_detail.hpp) · via [MoonLight](https://github.com/MoonModules/MoonLight/blob/main/src/MoonLight/Nodes/Effects/E_FastLED.h)
+Origin: MoonLight · concept by [Stefan Petrick](https://github.com/StefanPetrick), composition by Jeff (mindful_stone / [4wheeljive](https://github.com/4wheeljive)) in [FlowFields](https://github.com/4wheeljive/FlowFields/blob/main/src/flows/flow_noise.h) · via [MoonLight](https://github.com/MoonModules/MoonLight/blob/main/src/MoonLight/Nodes/Effects/E_FastLED.h)
 
 <a id="distortionwaves"></a>
 
@@ -315,7 +315,7 @@ An aquarium on a light wall: fish of three shapes swim across a dark tank, each 
 - `school`: how many tiny schooling fish (0-8).
 - `speed`: swim rate in body-lengths, so motion reads the same on any grid; each fish varies around it, and the smaller shapes drift slower, which reads as depth.
 - `spriteSize`: integer magnification (crisp nearest-neighbor); 0 = auto, scaling with the grid so a fish reads as a fish on a 16x16 matrix and on a 768-wide desktop grid alike.
-- `soundReactive`: move to the music: each sprite follows its own frequency band, so the scene breathes rather than surging as one block, and silence stands it still. Without an audio source the sprites keep moving normally.
+- `audioReactive`: move to the music: each sprite follows its own frequency band, so the scene breathes rather than surging as one block, and silence stands it still. Without an audio source the sprites keep moving normally.
 
 Uses the global palette: every fish takes a body color from it, with its band a paler version of that same color rather than a second pick, which would read as two fish fused together.
 
@@ -333,11 +333,58 @@ The classic screensaver on a light wall: chrome toasters with flapping wings and
 - `toast`: how many slices trail along (0–8).
 - `speed`: drift rate in sprite-widths, so flight reads the same on any grid; each flier varies ±25% around it.
 - `spriteSize`: integer magnification for toasters AND toast (crisp nearest-neighbor); 0 = auto, scaling with the grid so a toaster reads as a toaster on a big wall.
-- `soundReactive`: move to the music: each sprite follows its own frequency band, so the scene breathes rather than surging as one block, and silence stands it still. Without an audio source the sprites keep moving normally.
+- `audioReactive`: move to the music: each sprite follows its own frequency band, so the scene breathes rather than surging as one block, and silence stands it still. Without an audio source the sprites keep moving normally.
 
 The sprites carry their own colors (chrome, wing, crust), so the global palette does not apply. Needs a grid at least the toaster's size (12×9).
 
 Origin: projectMM original; inspired by After Dark's Flying Toasters (Berkeley Systems, 1989), suggested by Frank ([softhack007](https://github.com/softhack007)): the pixel art here is drawn fresh for this effect
+
+<a id="fixedpoint"></a>
+
+### FixedPoint 💫🖌️ · 2D
+
+Shapes placed BETWEEN pixels rather than on them. A clock hand drawn on whole pixels jumps a full
+pixel at a time and reads as broken; the same hand placed at a fractional position and antialiased
+moves smoothly, because a pixel's brightness carries the fraction its position cannot.
+
+- `demo`: which figure, or `all` to cycle them.
+    - **clock**: a rim, twelve tick marks and three hands geared 1:12:144. The hands run on fixed
+      periods from the clock rather than on `bpm`, accelerated 10x so a second sweeps in 6 seconds.
+    - **orbits**: four rings circling the center, each breathing on its own oscillator.
+    - **star web**: a pentagram inside two rings, its stroke pulsing on a third harmonic.
+    - **spirograph**: a pen on a wheel rolling inside a larger circle. The figure closes because
+      the rates share a 3:2 ratio.
+    - **lissajous**: two perpendicular oscillators at 3:2, with the phase creeping so the figure
+      morphs rather than repeating.
+    - **cube thin** / **cube thick**: a wireframe cube in perspective, tumbling on two axes. Depth
+      reads as brightness, and on the thick one as stroke width too.
+    - **walkers**: six points on a damped random walk, held near the middle by a weak spring.
+    - **boids**: seven of them on the classic three rules (separation, alignment, cohesion) with
+      soft walls. The flock's shape is emergent; nothing tells it to form one.
+    - **hypotrochoid**: the spirograph with the wheel and pen sizes varying, so each visit draws a
+      different rosette.
+    - **tree**: a recursive trunk forking six levels deep, swaying on a 9 second wind cycle and
+      growing on a 10 second one, so it never repeats a pose.
+- `bpm`: how fast the orbits and curve figures run. The clock keeps its own periods.
+- `fade`: how much of the previous frame survives, which is what leaves the trail. At 255 the
+  shapes are crisp with no trail.
+- `dwell`: seconds each demo holds before `all` moves on (hidden unless `demo` is `all`).
+- `drift`: how far the whole scene wanders from the panel's center, in pixels. The original orbits
+  its origin rather than pinning it; 0 pins it.
+- `zoom`: the camera. It pushes in toward the second hand's tip on a 20 second cycle, so the scene
+  grows and slides off-center at the peak and settles back, which is what makes the clock sweep
+  across the panel rather than sit still. 0 holds the camera fixed.
+
+Built on `draw::disc` / `draw::ring` / `draw::strokeLine`, the sub-pixel family in the draw layer;
+the effect computes no coverage itself. Concept and the original fixed-point canvas demos:
+[Sutaburosu](https://github.com/sutaburosu) in FastLED, via MoonLight, which bundles twelve behind
+one control; all eleven are ported here.
+
+Origin: MoonLight (Sutaburosu)
+
+Detail: [technical](moxygen/FixedPointEffect.md)
+
+[Tests](../../tests/unit-tests.md#fixedpointeffect)
 
 <a id="movinghead"></a>
 
@@ -365,11 +412,17 @@ an LED strip paints the color pattern and moves nothing.
 - `panRange` / `tiltRange`: how much of the fixture's travel to use. A head at full pan spends
   much of its sweep pointing away from the audience, so the default is a band around center.
 - `panCenter` / `tiltCenter`: where the sweep is centered (128 = the fixture's middle).
-- `soundReactive`: move and light with the music: the beam swings wider as the room gets louder,
+- `audioReactive`: move and light with the music: the beam swings wider as the room gets louder,
   each head takes its brightness from its own frequency band so the rig ripples rather than pulsing
   as one block, and a beat widens the sweep and flares the color with a short decay so a kick is
   visible rather than a one-frame flicker. Silence holds the rig still, which is what makes it read
   as reactive rather than merely animated.
+- `gobo` / `rotate`: the beam's own wheels, shown only on a rig whose fixtures carry them. Both are
+  raw fixture bytes rather than a slot count: a gobo channel is a range per pattern and every model
+  splits it differently, so the fixture's manual is what says which value selects what.
+- `goboOnBeat`: roll a new gobo on a bass hit instead of holding one pattern all night, then hold
+  that pattern for about two seconds. Without the hold a four-to-the-floor kick changes the pattern
+  four times a second, which reads as a flicker rather than as patterns.
 
 A fixture chain is one-dimensional, so lay the rig out as a **1 x N** grid (width 1, height N):
 extrude duplicates the x=0 column, so N x 1 would copy the first head's aim over every head.
@@ -390,7 +443,7 @@ In this first iteration the characters travel independently and do not notice ea
 - `ghosts`: how many ghosts (0-8); the arcade cast is four.
 - `speed`: travel rate in sprite-widths, so motion reads the same on any grid; Pacman runs slightly ahead of the ghosts, as in the original.
 - `spriteSize`: integer magnification (crisp nearest-neighbor); 0 = auto, scaling with the grid so the characters read on a 16x16 matrix and on a 768-wide desktop grid alike.
-- `soundReactive`: move to the music: each sprite follows its own frequency band, so the scene breathes rather than surging as one block, and silence stands it still. Without an audio source the sprites keep moving normally.
+- `audioReactive`: move to the music: each sprite follows its own frequency band, so the scene breathes rather than surging as one block, and silence stands it still. Without an audio source the sprites keep moving normally.
 
 Pacman is always his own yellow; the ghosts take their body colors from the active palette, so they stay four distinguishable characters whatever palette is loaded.
 
@@ -410,7 +463,7 @@ On a panel narrower than the formation the ranks scroll through the court instea
 - `stepX`: how far a step moves the formation sideways, in pixels.
 - `dropY`: how far a wall turn drops it, in pixels.
 - `size`: integer magnification per art pixel; 1 on a matrix, 2 or more on a wall.
-- `soundReactive`: the beat becomes the clock: the formation steps on transients and stands still in silence, so the march locks to the track.
+- `audioReactive`: the beat becomes the clock: the formation steps on transients and stands still in silence, so the march locks to the track.
 
 The invaders take their body color from the active palette. Origin: projectMM original; inspired by Taito's Space Invaders (1978), the pixel art drawn fresh for this effect
 
@@ -429,7 +482,7 @@ Physics run on elapsed time, not per frame, so the plume looks the same on a 60 
 - `rate`: sprites launched per beat of the emit clock.
 - `emitBpm`: launches per minute, so the plume's density is a choice rather than a side effect of how fast the device runs.
 - `size`: integer magnification per art pixel.
-- `soundReactive`: one sprite per frequency band, thrown when that band is loud, so the cast maps onto the spectrum in order: the bass bands throw fish, the treble bands throw invaders. Silence throws nothing.
+- `audioReactive`: one sprite per frequency band, thrown when that band is loud, so the cast maps onto the spectrum in order: the bass bands throw fish, the treble bands throw invaders. Silence throws nothing.
 
 Colors come from the active palette, one entry per sprite, held for its whole flight. Origin: projectMM original
 
@@ -448,7 +501,7 @@ The court is fixed point rather than pixels, so the game plays identically on a 
 - `reflex`: how sharply a paddle chases the ball. Below full speed it lags a fast ball, which is where the misses come from.
 - `size`: integer magnification, when the ball is a sprite.
 - `spriteBall`: swap the classic square for a member of the shared sprite cast, re-picked on every hit, so a paddle knocks one character away and another back.
-- `soundReactive`: the ball advances only on the beat, so it crosses the court in time with the track and stands still in silence.
+- `audioReactive`: the ball advances only on the beat, so it crosses the court in time with the track and stands still in silence.
 
 Uses the global palette. Origin: projectMM original; inspired by Atari's Pong (1972)
 
@@ -1177,22 +1230,6 @@ Nothing is transported. The effect keeps a short history of band frames and ever
 - `polarTable`, `polarTable16`, `mapping`: the polar address, and cylindrical, spherical or radial on a volume (light/polar.h).
 
 Origin: projectMM original, the radial spectrogram on `PolarLut` and the onset detector
-
-<a id="audiovolume"></a>
-
-### AudioVolume 💫🎵
-
-<img src="../../assets/light/effects/AudioVolumeEffect.gif" width="300" alt="AudioVolume effect preview">
-
-A whole-grid VU meter: every light pulses with the mic level, color indexing the palette by loudness.
-
-- `brightness`: overall brightness ceiling for the VU pulse (1–255).
-
-Origin: projectMM original (VU meter)
-
-Detail: [technical](moxygen/AudioVolumeEffect.md)
-
-[Tests](../../tests/unit-tests.md#audioservice)
 
 <a id="demoreel"></a>
 

@@ -15,7 +15,7 @@ Confirmed with the product owner:
   per board via `deviceModels.json`; NOT a hardcoded child of System.
 - **Start minimal, grow later** — brightness up/down now; richer remote mapping is a follow-up.
 
-Backlog alignment ([backlog-mixed.md](../../backlog/backlog-mixed.md)): IR is named as an input
+Backlog alignment ([backlog-mixed.md](../../../backlog/backlog-mixed.md)): IR is named as an input
 for the eventual **LightsControl** hub. This module is the thin IR *input* peripheral; when
 LightsControl is built it consumes IR via the same static seam (the `AudioModule::latestFrame()`
 pattern). This does not build LightsControl — it builds the IR input and one concrete action.

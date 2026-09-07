@@ -155,3 +155,101 @@ TEST_CASE("the compiler and the change-detector read the same file") {
     REQUIRE(moonlive::scriptFileHash(name, hash));
     CHECK(hash == moonlive::scriptHash(factory.c_str(), factory.size()));
 }
+
+// The fourth question: is a user copy HIDING a shipped one? From outside the two cases are
+// identical, and a stale user copy has twice been chased as a compiler bug (a control that never
+// appeared; then an old-syntax copy failing at offsets that matched nothing in the file just
+// written). The binding puts the answer in its status, and this is the predicate it asks.
+TEST_CASE("a user copy is reported as a shadow only when a shipped copy is under it") {
+    Rig rig;   // its own root: these write scripts, and without it that is the real device
+    const char* name = "unit-shadow.mle";
+    drop(moonlive::kScriptDir, name);
+    drop(moonlive::kFactoryScriptDir, name);
+
+    CHECK_FALSE(moonlive::scriptShadowsFactory(name));                 // neither
+
+    put(moonlive::kFactoryScriptDir, name, "class A { void tick() {} }\n");
+    CHECK_FALSE(moonlive::scriptShadowsFactory(name));                 // shipped only: no shadow
+
+    put(moonlive::kScriptDir, name, "class A { void tick() {} }\n");
+    CHECK(moonlive::scriptShadowsFactory(name));                       // both: the user's hides it
+
+    drop(moonlive::kFactoryScriptDir, name);
+    CHECK_FALSE(moonlive::scriptShadowsFactory(name));                 // user's own script: not a shadow
+    drop(moonlive::kScriptDir, name);
+}
+
+// The fifth question, and the one the shadow marker alone cannot answer: has the SHIPPED copy moved
+// on since the user forked it? Without lineage an edit and a stale leftover look identical forever,
+// which is what let 29 pre-`void tick()` copies sit on a bench board failing every compile.
+TEST_CASE("a fork knows whether the shipped script has changed under it") {
+    Rig rig;   // its own root, for the same reason
+    const char* name = "unit-lineage.mle";
+    const char* shipped = "class A { void tick() {} }\n";
+    drop(moonlive::kScriptDir, name);
+    drop(moonlive::kFactoryScriptDir, name);
+
+    put(moonlive::kFactoryScriptDir, name, shipped);
+    put(moonlive::kScriptDir, name, "class A { void tick() { fill(1, 2, 3); } }\n");
+
+    // No lineage recorded (an older fork): "cannot say", never "unchanged". Claiming an update on a
+    // guess would send someone to discard work for nothing.
+    CHECK_FALSE(moonlive::scriptFactoryMovedOn(name));
+
+    REQUIRE(moonlive::noteScriptLineage(name, moonlive::scriptHash(shipped, std::strlen(shipped))));
+    CHECK_FALSE(moonlive::scriptFactoryMovedOn(name));          // forked from exactly this text
+
+    put(moonlive::kFactoryScriptDir, name, "class A { void tick() { fill(9, 9, 9); } }\n");
+    CHECK(moonlive::scriptFactoryMovedOn(name));                // the library moved under the fork
+
+    char side[128];
+    moonlive::scriptLineagePath(name, side, sizeof(side));
+    platform::fsRemove(side);
+    drop(moonlive::kScriptDir, name);
+    drop(moonlive::kFactoryScriptDir, name);
+}
+
+// Lineage is bookkeeping the DEVICE does, on the same hook that reacts to any write or delete, so
+// every writer gets it: the editor, a restored backup, a script pushed by a tool.
+TEST_CASE("forking a shipped script records what it was forked from, and reverting forgets it") {
+    Rig rig;   // its own root, for the same reason
+    const char* name = "unit-fork.mle";
+    const char* shipped = "class A { void tick() {} }\n";
+    char userPath[96], side[128];
+    std::snprintf(userPath, sizeof(userPath), "%s/%s", moonlive::kScriptDir, name);
+    moonlive::scriptLineagePath(name, side, sizeof(side));
+    drop(moonlive::kScriptDir, name);
+    drop(moonlive::kFactoryScriptDir, name);
+    platform::fsRemove(side);
+
+    // A write with nothing shipped under it is a user's OWN script, not a fork: no lineage.
+    put(moonlive::kScriptDir, name, "class A { void tick() {} }\n");
+    moonlive::noteForkedFrom(userPath);
+    uint32_t from = 0;
+    CHECK_FALSE(moonlive::scriptLineage(name, from));
+
+    // Now the same name ships too, and the next write IS a fork.
+    put(moonlive::kFactoryScriptDir, name, shipped);
+    put(moonlive::kScriptDir, name, "class A { void tick() { fill(1, 2, 3); } }\n");
+    moonlive::noteForkedFrom(userPath);
+    REQUIRE(moonlive::scriptLineage(name, from));
+    CHECK(from == moonlive::scriptHash(shipped, std::strlen(shipped)));
+
+    // EDITING the fork again must not move the branch point. Re-stamping here would mark the fork
+    // up to date with a library version the user never saw, erasing the one fact the record exists
+    // to carry.
+    put(moonlive::kFactoryScriptDir, name, "class A { void tick() { fill(9, 9, 9); } }\n");
+    put(moonlive::kScriptDir, name, "class A { void tick() { fill(4, 5, 6); } }\n");
+    moonlive::noteForkedFrom(userPath);
+    REQUIRE(moonlive::scriptLineage(name, from));
+    CHECK(from == moonlive::scriptHash(shipped, std::strlen(shipped)));   // still the ORIGINAL
+    CHECK(moonlive::scriptFactoryMovedOn(name));                          // and the library moved
+
+    // Reverting removes the fork; the hook fires again and the lineage goes with it, so a later
+    // fork of this name is not compared against a hash from one that no longer exists.
+    platform::fsRemove(userPath);
+    moonlive::noteForkedFrom(userPath);
+    CHECK_FALSE(moonlive::scriptLineage(name, from));
+
+    drop(moonlive::kFactoryScriptDir, name);
+}

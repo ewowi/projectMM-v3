@@ -10,7 +10,7 @@ an NDI source and reach a Spout pipeline through one hop.
 Input is not the gap: `NetworkReceiveEffect` already binds Art-Net, E1.31/sACN and DDP at once.
 What is missing is the other direction — projectMM's pixels reaching a production visuals rig.
 
-Decision recorded in [backlog-light § Integration with other LED and visuals tools](../../backlog/backlog-light.md):
+Decision recorded in [backlog-light § Integration with other LED and visuals tools](../../../backlog/backlog-light.md):
 **NDI first.** One implementation covers Windows, macOS, Linux and ARM, it discovers by name, and
 it crosses machines. Spout (Windows) and Syphon (macOS) are lower latency and bit-exact but are
 same-machine only, are two platform implementations, and leave Linux and the Pi with nothing. At

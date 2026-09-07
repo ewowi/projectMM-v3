@@ -1,4 +1,5 @@
 #include "platform/platform.h"
+#include "core/FirmwareImage.h"  // identify/moonBaseRejection: shared image vetting
 
 #include <algorithm>
 #include <chrono>
@@ -1436,6 +1437,35 @@ bool otaWriteStream(FsWriteSrc /*src*/, void* /*user*/, size_t /*contentLen*/,
 bool otaHasMoonBase() { return false; }
 bool otaBootMoonBase() { return false; }
 bool otaRunningMoonBase() { return false; }
+// No factory partition off-device, so nothing to read a version from.
+bool otaMoonBaseVersion(char*, size_t) { return false; }
+bool otaMoonBaseBuild(char*, size_t) { return false; }
+bool otaMoonBaseSize(uint32_t*, uint32_t*) { return false; }
+// No factory partition to install into off-device.
+bool otaFetchMoonBaseUrl(const char*, char* statusBuf, size_t statusBufLen,
+                         uint32_t* bytesReadOut, uint32_t* bytesTotalOut) {
+    if (statusBuf && statusBufLen > 0) std::snprintf(statusBuf, statusBufLen, "unsupported on desktop");
+    if (bytesReadOut) *bytesReadOut = 0;
+    if (bytesTotalOut) *bytesTotalOut = 0;
+    return false;
+}
+
+// Desktop has no factory partition, so this cannot install anything. It DOES run the vetting,
+// which is the part worth exercising off-device: the checks below are what stand between a
+// mistyped URL and a board with no recovery image, and they are pure byte inspection. Tests
+// drive this to prove each rejection fires; the write itself has no meaning here and the
+// function reports so, which also keeps a desktop caller from believing it worked.
+// Desktop has no factory partition, so this installs nothing. It also does not CONSUME anything:
+// an earlier version read the caller's first chunk to run the vetting, which took bytes off a
+// stream the caller still owned for a check whose real coverage is unit_FirmwareImage driving
+// mm::firmware::identify directly. Refusing without touching the source is the honest stub.
+bool otaWriteMoonBase(FsWriteSrc, void*, size_t, char* statusBuf, size_t statusBufLen,
+                      uint32_t* bytesReadOut) {
+    if (statusBuf && statusBufLen > 0) std::snprintf(statusBuf, statusBufLen, "unsupported on desktop");
+    if (bytesReadOut) *bytesReadOut = 0;
+    return false;
+}
+
 bool moonbaseStageInstallUrl(const char*) { return false; }
 void moonbaseClearStagedUrl() {}
 

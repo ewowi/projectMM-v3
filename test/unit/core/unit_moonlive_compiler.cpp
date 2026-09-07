@@ -105,6 +105,228 @@ TEST_CASE("arguments reach a function two calls deep") {
     CHECK(buf[6] == 44);
 }
 
+// --- function arguments ------------------------------------------------------------------------
+//
+// Passed BY VALUE, through a block in the arena rather than in the frame: each function opens its
+// own frame and a slot is addressed off the current frame pointer (on Xtensa via the windowed ABI's
+// `entry a1, N`), so a caller cannot reach the slot its callee will read. The arena is what both
+// activations share. See kScriptArgBase in MoonLiveBuiltins.h.
+
+TEST_CASE("a function receives the value its caller passed") {
+    moonlive::MoonLive eng;
+    REQUIRE(eng.compile("class T {\n"
+                        "  void paint(int idx, int level) { setRGB(idx, level, 0, 0); }\n"
+                        "  void tick() { paint(0, 11); paint(1, 22); }\n"
+                        "}\n", kTable, kSys));
+    REQUIRE(eng.ok());
+    std::vector<uint8_t> buf(4 * 3, 0);
+    eng.run(buf.data(), 4, 3, 0, "tick");
+    CHECK(buf[0] == 11);
+    CHECK(buf[3] == 22);
+}
+
+TEST_CASE("an argument is a copy: writing the parameter leaves the caller's variable alone") {
+    // By VALUE is the contract, and this is what it means at the call site. A reference would make
+    // the second pixel 99 as well.
+    moonlive::MoonLive eng;
+    REQUIRE(eng.compile("class T {\n"
+                        "  void bump(int v) { v = 99; setRGB(0, v, 0, 0); }\n"
+                        "  void tick() { int mine = 7; bump(mine); setRGB(1, mine, 0, 0); }\n"
+                        "}\n", kTable, kSys));
+    REQUIRE(eng.ok());
+    std::vector<uint8_t> buf(4 * 3, 0);
+    eng.run(buf.data(), 4, 3, 0, "tick");
+    CHECK(buf[0] == 99);   // the callee saw its own copy
+    CHECK(buf[3] == 7);    // the caller's variable is untouched
+}
+
+TEST_CASE("a recursive function keeps its own arguments through the calls it makes") {
+    // THE case the single arena block has to survive. One block serves every depth only because a
+    // callee copies its arguments into its own frame before it can call anything; without that
+    // copy, the inner call would overwrite the outer one's arguments and the countdown would never
+    // terminate or would paint the wrong pixels.
+    moonlive::MoonLive eng;
+    REQUIRE(eng.compile("class T {\n"
+                        "  void down(int n) { if (n > 0) { setRGB(n, n, 0, 0); down(n - 1); } }\n"
+                        "  void tick() { down(3); }\n"
+                        "}\n", kTable, kSys));
+    REQUIRE(eng.ok());
+    std::vector<uint8_t> buf(4 * 3, 0);
+    eng.run(buf.data(), 4, 3, 0, "tick");
+    CHECK(buf[9] == 3);    // each activation kept its own n
+    CHECK(buf[6] == 2);
+    CHECK(buf[3] == 1);
+}
+
+TEST_CASE("a nested call does not clobber the arguments of the call it sits inside") {
+    // `outer(inner(x))`: the inner call writes the same arena block. It has RETURNED before the
+    // outer arguments are written, which is what makes one block enough.
+    moonlive::MoonLive eng;
+    REQUIRE(eng.compile("class T {\n"
+                        "  int twice(int v) { return v * 2; }\n"
+                        "  void paint(int idx, int level) { setRGB(idx, level, 0, 0); }\n"
+                        "  void tick() { paint(0, twice(21)); }\n"
+                        "}\n", kTable, kSys));
+    REQUIRE(eng.ok());
+    std::vector<uint8_t> buf(4 * 3, 0);
+    eng.run(buf.data(), 4, 3, 0, "tick");
+    CHECK(buf[0] == 42);
+}
+
+TEST_CASE("calling a function with the wrong number of arguments is refused") {
+    // Both directions, because a silent mismatch would read whatever the arena block held from an
+    // earlier call: a wrong picture rather than an error.
+    moonlive::MoonLive tooFew;
+    CHECK_FALSE(tooFew.compile("class T {\n"
+                               "  void paint(int a, int b) { setRGB(a, b, 0, 0); }\n"
+                               "  void tick() { paint(1); }\n"
+                               "}\n", kTable, kSys));
+    moonlive::MoonLive tooMany;
+    CHECK_FALSE(tooMany.compile("class T {\n"
+                                "  void paint(int a) { setRGB(a, 1, 0, 0); }\n"
+                                "  void tick() { paint(1, 2); }\n"
+                                "}\n", kTable, kSys));
+}
+
+// What an argument COSTS. The question a script author actually asks before rewriting a helper to
+// take parameters, and the reason it is measured rather than reasoned about: the answer decides
+// whether the clearer form is also the affordable one.
+TEST_CASE("passing an argument costs about what writing a member costs") {
+    // The OLD style: a member is the channel, written by the caller and read by the helper.
+    moonlive::MoonLive viaMember;
+    REQUIRE(viaMember.compile("class T {\n"
+                              "  int idx = 0;\n"
+                              "  void paint() { setRGB(idx, 11, 0, 0); }\n"
+                              "  void tick() { idx = 0; paint(); idx = 1; paint(); }\n"
+                              "}\n", kTable, kSys));
+    // The NEW style: the same work, said directly.
+    moonlive::MoonLive viaArg;
+    REQUIRE(viaArg.compile("class T {\n"
+                           "  void paint(int idx) { setRGB(idx, 11, 0, 0); }\n"
+                           "  void tick() { paint(0); paint(1); }\n"
+                           "}\n", kTable, kSys));
+    MESSAGE("member-passing: " << viaMember.codeLen() << " bytes, "
+            "argument: " << viaArg.codeLen() << " bytes");
+    // Both go through the arena: a member write is StoreCtrl, an argument is StoreCtrl32 into the
+    // argument block, and the helper reads it back either way. So the argument form must not cost
+    // materially more, and this pins that rather than trusting it.
+    CHECK(viaArg.codeLen() < viaMember.codeLen() * 3 / 2);
+}
+
+// --- else if, and the for's comparisons ---------------------------------------------------------
+
+TEST_CASE("a byte parameter wraps at 255, the way a byte local does") {
+    // A parameter is a local, so it has to behave like one. Handed 300 it kept 300, while the same
+    // value assigned to a byte local inside the body narrowed to 44: one type, two behaviors,
+    // depending only on how the value arrived.
+    moonlive::MoonLive eng;
+    REQUIRE(eng.compile("class T {\n"
+                        "  void paint(byte v) { setRGB(0, v, 0, 0); }\n"
+                        "  void tick() { paint(300); }\n"
+                        "}\n", kTable, kSys));
+    std::vector<uint8_t> buf(3, 0);
+    eng.run(buf.data(), 1, 3, 0, "tick");
+    CHECK(buf[0] == 44);            // 300 & 0xFF, as a byte local would hold
+}
+
+TEST_CASE("a function declaring more parameters than the block holds is refused") {
+    // The arena block carries kMaxScriptArgs values, and the CALL site clamps to it. The prologue
+    // did not: it emitted one LoadCtrl32 per DECLARED parameter, so a fifth read past the end of
+    // the arena allocation and a later one wrote there. Script text is user-supplied on a
+    // network-reachable device, so the declaration has to be refused where it is written.
+    moonlive::MoonLive five;
+    CHECK_FALSE(five.compile("class T {\n"
+                             "  void helper(int a, int b, int c, int d, int e) { setRGB(a, 1, 0, 0); }\n"
+                             "  void tick() { helper(0, 0, 0, 0, 0); }\n"
+                             "}\n", kTable, kSys));
+
+    // Exactly the maximum still compiles: the bound is the block's size, not one below it.
+    moonlive::MoonLive four;
+    CHECK(four.compile("class T {\n"
+                       "  void helper(int a, int b, int c, int d) { setRGB(a, b, c, d); }\n"
+                       "  void tick() { helper(0, 1, 2, 3); }\n"
+                       "}\n", kTable, kSys));
+}
+
+TEST_CASE("a parameter name is checked the way a local is") {
+    // A parameter IS a local, so a name refused inside the body must be refused in the list.
+    // Without these checks a parameter could shadow a builtin (making it unreachable for the whole
+    // function) or repeat another, where lookups find the first while the caller stages into both.
+    for (const char* params : {"int t",            // a system variable
+                               "int width",        // a system variable
+                               "int a, int a"}) {  // the same name twice
+        moonlive::MoonLive eng;
+        char src[256];
+        std::snprintf(src, sizeof(src),
+                      "class T {\n  void helper(%s) { }\n  void tick() { helper(1); }\n}\n", params);
+        CAPTURE(params);
+        CHECK_FALSE(eng.compile(src, kTable, kSys));
+    }
+    // And a well-formed list still compiles.
+    moonlive::MoonLive ok;
+    CHECK(ok.compile("class T {\n"
+                     "  void helper(int a, int b) { setRGB(a, b, 0, 0); }\n"
+                     "  void tick() { helper(0, 42); }\n"
+                     "}\n", kTable, kSys));
+}
+
+TEST_CASE("a chain of else if arms picks exactly one") {
+    // The shape a MODE control needs, and every arm is exercised: a chain that fell through would
+    // still paint the right value for the first case while painting a later arm's for the rest.
+    // The selector is a plain local per compile rather than a control, so the arms are chosen the
+    // same way at runtime without needing a control-capable fixture table.
+    for (const auto& [mode, want] : std::vector<std::pair<int, uint8_t>>{
+             {0, 10}, {1, 20}, {2, 30}, {7, 40}}) {
+        CAPTURE(mode);
+        char src[384];
+        std::snprintf(src, sizeof(src),
+                      "class T {\n"
+                      "  void tick() {\n"
+                      "    int mode = %d;\n"
+                      "    if (mode == 0) { setRGB(0, 10, 0, 0); }\n"
+                      "    else if (mode == 1) { setRGB(0, 20, 0, 0); }\n"
+                      "    else if (mode == 2) { setRGB(0, 30, 0, 0); }\n"
+                      "    else { setRGB(0, 40, 0, 0); }\n"
+                      "  }\n"
+                      "}\n", mode);
+        moonlive::MoonLive eng;
+        REQUIRE(eng.compile(src, kTable, kSys));
+        REQUIRE(eng.ok());
+        std::vector<uint8_t> buf(3, 0);
+        eng.run(buf.data(), 1, 3, 0, "tick");
+        CHECK(buf[0] == want);    // exactly the arm that matches, and nothing after it
+    }
+}
+
+TEST_CASE("a for counts up to its bound with < and through it with <=") {
+    // `<=` is the same guard against a limit one higher, computed once rather than per iteration.
+    moonlive::MoonLive lt;
+    REQUIRE(lt.compile("class T {\n"
+                       "  void tick() { for (int i = 0; i < 3; i = i + 1) { setRGB(i, 99, 0, 0); } }\n"
+                       "}\n", kTable, kSys));
+    std::vector<uint8_t> a(4 * 3, 0);
+    lt.run(a.data(), 4, 3, 0, "tick");
+    CHECK(a[6] == 99);            // index 2 painted
+    CHECK(a[9] == 0);             // index 3 NOT painted
+
+    moonlive::MoonLive le;
+    REQUIRE(le.compile("class T {\n"
+                       "  void tick() { for (int i = 0; i <= 3; i = i + 1) { setRGB(i, 99, 0, 0); } }\n"
+                       "}\n", kTable, kSys));
+    std::vector<uint8_t> b(4 * 3, 0);
+    le.run(b.data(), 4, 3, 0, "tick");
+    CHECK(b[9] == 99);            // index 3 IS painted
+}
+
+TEST_CASE("a descending for is refused with the workaround named") {
+    // Refused rather than half-supported: the step's DIRECTION is not modelled, so a `>` accepted
+    // here would emit an ascending guard around a descending body.
+    moonlive::MoonLive eng;
+    CHECK_FALSE(eng.compile("class T {\n"
+                            "  void tick() { for (int i = 3; i > 0; i = i - 1) { setRGB(i, 9, 0, 0); } }\n"
+                            "}\n", kTable, kSys));
+}
+
 // UNBOUNDED recursion must degrade visibly and keep the device rendering. A fixed render-task
 // stack means the alternative is a reset, which the robustness rule forbids. A reset is what
 // this script produced before the depth guard: ~176 bytes of frame per activation against a 12 KB

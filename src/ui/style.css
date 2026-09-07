@@ -1711,11 +1711,20 @@ body.cards-resizing {
 .fm-bar {
     display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px;
 }
-/* Install-from-file row under the Firmware card: the .bin picker button + its live status. */
+/* The URL and File rows under the Firmware card. They carry .control-row too, so their labels sit
+   in the same 100px column as the picker's Release and Firmware rows above them: one column
+   definition rather than two numbers kept in step by hand. */
 .fw-upload-row {
-    display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px;
+    flex-wrap: wrap; gap: 8px;
 }
-.fw-upload-status { color: var(--muted); font-size: 0.85em; }
+.fw-upload-status { color: var(--fg-muted); font-size: 0.85em; }
+/* The URL a device should fetch. Grows to fill the row so a long release URL stays readable. */
+.fw-url-field {
+    flex: 1 1 12em; min-width: 0; padding: 4px 8px;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg-0); color: var(--fg); font: inherit; font-size: 0.85em;
+}
+
 .fm-crumb {
     background: none; border: none; color: var(--accent); cursor: pointer;
     padding: 2px 4px; border-radius: 4px; font: inherit;
@@ -1787,6 +1796,23 @@ body.cards-resizing {
 .fm-usage-name { flex: 0 0 auto; }
 .fm-usage progress { flex: 1 1 auto; height: 8px; }
 .fm-usage-label { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+
+/* Asking before a MoonBase install: the app's own chrome, not the browser's. A native confirm()
+   is the one box in this UI that cannot be styled, and it showed as a white system panel over a
+   dark card. Same <dialog> element the editor uses, so Esc and the backdrop work unaided. */
+.mb-ask {
+    width: min(420px, 92vw); padding: 16px 18px;
+    border: 1px solid var(--border); border-radius: 10px;
+    background: var(--card-bg-0); color: var(--fg);
+}
+.mb-ask::backdrop { background: rgba(0,0,0,0.5); }
+.mb-ask h3 { margin: 0 0 10px; font-size: 1rem; }
+.mb-ask p { margin: 0 0 10px; font-size: 0.9em; line-height: 1.45; }
+/* The reassurance reads quieter than the warning above it: the point is that a mistake is cheap,
+   which should not compete with the sentence saying what is at stake. */
+.mb-ask-calm { color: var(--fg-muted); }
+.mb-ask-row { display: flex; justify-content: flex-end; gap: 8px; }
+.mb-ask-go { background: var(--accent); color: var(--bg-0); }
 
 /* Inline editor — native <dialog>, sized to a comfortable text pane. */
 .fm-editor {

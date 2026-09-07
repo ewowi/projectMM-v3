@@ -1,0 +1,50 @@
+// StadBeestLegs: a crawl travelling down ten legs, each offset so the rig reads as walking.
+
+class StadBeestLegsEffect {
+  byte hue = 100;
+  byte bpm = 12;
+  byte spread = 60;
+  byte tail = 40;
+  byte audioReactive = 0;
+
+  int dimensions() { return 2; }
+
+  string tags() { return "💫🎶"; }
+
+  void defineControls() {
+    addControl("hue", hue, 0, 255); // base color: 100 is a sickly green, 200 violet
+    addControl("bpm", bpm, 1, 60); // how fast the pulses travel down a leg
+    addControl("spread", spread, 0, 255); // how far apart the legs are in the gait
+    addControl("tail", tail, 5, 120); // how long a pulse's trail is
+    addControl("audioReactive", audioReactive, 0, 1); // each leg takes its own frequency band
+  }
+
+  void tick() {
+    for (int leg = 0; leg < width; leg = leg + 1) {
+      int phase = div(leg * spread, 4);
+
+      int drive = 255;
+      if (audioReactive == 1) {
+        drive = audioBand(div(leg * 16, width)) + 40;
+        if (drive > 255) { drive = 255; }
+      }
+
+      int head = div(beat(bpm, t + phase) * height, 65536);
+      int shimmer = div(noise(leg * 900, 0, t), 6);
+
+      for (int y = 0; y < height; y = y + 1) {
+        int behind = y - head;
+        if (behind < 0) { behind = behind + height; }
+
+        int bright = 0;
+        if (behind < tail) { bright = 255 - div(behind * 255, tail); }
+
+        bright = bright + shimmer - div(y * 12, height);
+        if (bright > 255) { bright = 255; }
+        bright = div(bright * drive, 256);
+
+        setPaletteColor(leg, y, hue + div(y * 40, height), bright);
+      }
+    }
+  }
+}

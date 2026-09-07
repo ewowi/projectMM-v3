@@ -5,11 +5,6 @@ class BallsEffect {
   byte size = 5;
   byte bpm = 20;
 
-  byte b = 0; // the ball being drawn
-  byte radius = 4; // that ball's radius in lights
-  byte px = 0; // its center, across
-  byte py = 0; // its center, down
-
   int dimensions() { return 2; }
 
   string tags() { return "💫"; }
@@ -20,13 +15,13 @@ class BallsEffect {
     addControl("bpm", bpm, 1, 120); // how fast they travel
   }
 
-  void drawBall() {
+  // One ball: a filled disc at (px, py), shaded from its center outward.
+  void drawBall(int px, int py, int radius, int hue) {
     for (int dy = 0; dy < 21; dy = dy + 1) {
       for (int dx = 0; dx < 21; dx = dx + 1) {
-        if ((dx - radius) * (dx - radius) + (dy - radius) * (dy - radius) <= radius * radius) {
-          setPaletteColor(px + dx, py + dy, b * 64,
-                          255 - scale(((dx - radius) * (dx - radius)
-                                       + (dy - radius) * (dy - radius)) * 640, 256));
+        int away = (dx - radius) * (dx - radius) + (dy - radius) * (dy - radius);
+        if (away <= radius * radius) {
+          setPaletteColor(px + dx, py + dy, hue, 255 - scale(away * 640, 256));
         }
       }
     }
@@ -35,19 +30,16 @@ class BallsEffect {
   void tick() {
     fill(0, 0, 0);
 
-    radius = scale(height, size * 819) + 1;
+    int radius = scale(height, size * 819) + 1;
     if (width < height) { radius = scale(width, size * 819) + 1; }
     if (radius > 10) { radius = 10; }
     if (width < radius * 2 + 2) { radius = 0; }
     if (height < radius * 2 + 2) { radius = 0; }
 
-    for (int i = 0; i < 4; i = i + 1) {
-      b = i;
-      if (b < count) {
-        px = beatsin(bpm + b * 7, t, width - radius * 2 - 1);
-        py = beatsin(bpm + b * 5 + 3, t, height - radius * 2 - 1);
-        drawBall();
-      }
+    for (int i = 0; i < count; i = i + 1) {
+      drawBall(beatsin(bpm + i * 7, t, width - radius * 2 - 1),
+               beatsin(bpm + i * 5 + 3, t, height - radius * 2 - 1),
+               radius, i * 64);
     }
   }
 }

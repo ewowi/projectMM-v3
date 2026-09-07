@@ -35,15 +35,25 @@ TEST_CASE("FirmwareUpdateModule firmware control populated") {
     // appears on a real device but NOT on desktop/test where firmwarePartition() returns 0 — assert
     // its TYPE only when present (a Progress control), rather than its presence, so this stays valid
     // on both.
-    bool hasVersion = false, hasBuild = false;
+    bool hasVersion = false, hasBuild = false, hasPartition = false;
     for (uint8_t i = 0; i < fw.controls().count(); i++) {
         const auto& c = fw.controls()[i];
         if (std::strcmp(c.name, "version") == 0) hasVersion = true;
         if (std::strcmp(c.name, "build") == 0) hasBuild = true;
-        if (std::strcmp(c.name, "firmwarePartition") == 0) CHECK(c.type == mm::ControlType::Progress);
+        // `partition`, renamed from `firmwarePartition` when one control set began describing
+        // either image. The old name left this CHECK inside a condition that is never true, so it
+        // asserted nothing while looking like it did.
+        if (std::strcmp(c.name, "partition") == 0) {
+            hasPartition = true;
+            CHECK(c.type == mm::ControlType::Progress);
+        }
     }
     CHECK(hasVersion);
     CHECK(hasBuild);
+    // Not asserted present: the control is added only when the platform reports a partition size,
+    // and desktop reports 0. What is asserted is its TYPE when it does exist, which is what the
+    // old `firmwarePartition` spelling silently stopped checking.
+    (void)hasPartition;
 }
 
 // OTA phase is surfaced through the shared status slot (MoonModule::setStatus()),

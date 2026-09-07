@@ -23,6 +23,8 @@
 #include "esp_event.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
+#include "core/FirmwareImage.h"  // identify(): the one shared header, see main/CMakeLists.txt
+#include "esp_app_desc.h"    // esp_app_get_description: this image's own version
 #include "esp_https_ota.h"
 #include "esp_littlefs.h"
 #include "esp_netif.h"
@@ -365,8 +367,12 @@ const char kPage[] =
     "<div id=hdr><img src=/logo.png alt=''><h1>MoonBase</h1>"
     // The (?) module cards carry, pointing at the published MoonBase doc.
     "<a id=hlp target=_blank rel=noopener title='MoonBase documentation' "
-    "href='https://moonmodules.org/projectMM/architecture.html#moonbase-the-second-boot-image-4-mb-boards'>?</a></div>"
-    "<p class=sub>Install firmware to return this device to normal operation.</p>"
+    "href='https://moonmodules.org/projectMM/gettingstarted.html#if-your-device-shows-moonbase'>?</a></div>"
+    "<p class=sub>Install firmware to return this device to normal operation."
+    // WHICH MoonBase this is. Filled by the boot script below rather than baked into this
+    // literal: PROJECT_VER is defined only for IDF's own descriptor TU, and the descriptor is
+    // already in the image, so reading it back costs nothing and cannot drift from it.
+    "<br><small id=v></small></p>"
     "<section><b>From a file</b><br><input type=file id=f accept=.bin>"
     "<button onclick=up()>Install</button>"
     // The last resort when no URL is at hand: name where the firmware-<variant>-v*.bin files
@@ -381,14 +387,34 @@ const char kPage[] =
     // Shown only while an install is running (S() toggles it): the one moment cancel applies.
     "<button id=c onclick=cx() style=display:none>Cancel install</button></section>"
     "<div id=s></div>"
+    // A real bar, not a sweep: an install is a minute of a user watching a number they cannot
+    // read as a fraction. Hidden until a byte count actually arrives.
+    "<progress id=p max=100 style='display:none;width:100%'></progress>"
     "<script>"
     // S() renders the status AND reveals Cancel only while an install is running.
     "const S=t=>{document.getElementById('s').textContent=t;"
     "document.getElementById('c').style.display="
-    "/downloading|starting|preparing|retrying/.test(t)?'':'none';};"
+    "/downloading|starting|preparing|retrying/.test(t)?'':'none';"
+    // The status already carries "N of M bytes"; reading the fraction out of it keeps one source
+    // of truth rather than adding a second endpoint that could disagree with the text.
+    //
+    // A THIRD reader of that shape, and the one that cannot be shared: this page lives in the
+    // MoonBase image, which shares no sources with the app (that is the trade for an image that
+    // stays small). The app's own two readers were merged into installProgress(); this one has
+    // to match it by hand, so keep the shape the same on both sides when either changes.
+    "const m=/(\\d+) of (\\d+)/.exec(t),b=document.getElementById('p');"
+    "if(m&&+m[2]>0){b.style.display='';b.value=100*m[1]/m[2];}else{b.style.display='none';}};"
     // Surface the last install status on load: after a failed unattended install the user lands
     // here, and the page should say what went wrong rather than look freshly booted.
-    "fetch('/moonbase').then(r=>r.text()).then(t=>{if(t&&t!='idle')S(t)}).catch(()=>{});"
+    "fetch('/moonbase').then(r=>r.text()).then(t=>{if(t&&t!='idle'){S(t);"
+    // AND WATCH IT. An install staged by the app runs unattended, so nothing on this page had
+    // started the watcher: the install finished, the app came back at this same address, and the
+    // page sat on its last status until someone reloaded by hand.
+    "if(/downloading|starting|preparing|retrying/.test(t))W();}}).catch(()=>{});"
+    // A device that cannot say which MoonBase it runs cannot be diagnosed: two boards looked
+    // identical while one could not install firmware, and telling them apart took a git bisect.
+    "fetch('/api/version').then(r=>r.text()).then(t=>{"
+    "document.getElementById('v').textContent='version '+t}).catch(()=>{});"
     // The file is sent as the RAW request body, not multipart: the device then writes bytes
     // straight to flash with no boundary parsing, which is a meaningful saving in an image this
     // size and matches how the application's own upload route works.
@@ -415,8 +441,15 @@ const char kPage[] =
 
 // The application slot. From the factory partition esp_ota_get_next_update_partition returns the
 // first OTA slot, which is the one we want and is never the one we are running from.
+//
+// UNLESS THIS IMAGE IS ITSELF IN THE APP SLOT, which happens when someone installs MoonBase as if
+// it were the app: both partitions then hold MoonBase, next_update_partition hands back the one
+// executing, and every install fails with ESP_ERR_OTA_PARTITION_CONFLICT (0x1501) while boot-app
+// points the bootloader at itself. The device answers, serves this page, and cannot be recovered
+// over the network. Returning null here is what lets the callers say so rather than loop.
 const esp_partition_t* appPartition() {
-    return esp_ota_get_next_update_partition(nullptr);
+    const esp_partition_t* part = esp_ota_get_next_update_partition(nullptr);
+    return (part && part == esp_ota_get_running_partition()) ? nullptr : part;
 }
 
 // Write a firmware image pulled from `url` straight into the application slot. This is what makes
@@ -463,6 +496,21 @@ bool installFromUrl(const char* url) {
                       static_cast<unsigned>(beginErr));
         return false;
     }
+    // NOT ANOTHER MOONBASE. This writes the APP slot, and a MoonBase image landing there leaves
+    // both partitions holding MoonBase: every install then fails with a partition conflict
+    // because next_update_partition hands back the running one, and boot-app points the
+    // bootloader at itself. The device still answers and still serves this page, which is what
+    // makes it so easy to do and so hard to undo: only a cable gets it back. The two images sit
+    // side by side on the releases page, one paste apart.
+    esp_app_desc_t incoming = {};
+    if (esp_https_ota_get_img_desc(handle, &incoming) == ESP_OK &&
+        std::strncmp(incoming.project_name, "projectMM-moonbase",
+                     sizeof(incoming.project_name)) == 0) {
+        std::snprintf(status_, sizeof(status_), "error: that is a MoonBase image, not an app");
+        esp_https_ota_abort(handle);
+        return false;
+    }
+
     esp_err_t err;
     while ((err = esp_https_ota_perform(handle)) == ESP_ERR_HTTPS_OTA_IN_PROGRESS) {
         if (cancelRequested_) {
@@ -538,7 +586,13 @@ void sendResponse(int sock, const char* status, const char* type, const char* bo
 // arrived in the same read as the headers.
 bool installFromSocketLocked(int sock, const char* prefix, size_t prefixLen, size_t contentLen) {
     const esp_partition_t* part = appPartition();
-    if (!part) { std::snprintf(status_, sizeof(status_), "error: no app partition"); return false; }
+    if (!part) {
+        // Either no OTA slot at all, or this MoonBase is running FROM it (see appPartition):
+        // the second is what a user meets, and a cable is the only way back.
+        std::snprintf(status_, sizeof(status_),
+                      "error: this MoonBase is in the app slot; reflash over USB");
+        return false;
+    }
     if (contentLen == 0 || contentLen > part->size) {
         std::snprintf(status_, sizeof(status_), "error: image is %u bytes, the slot holds %u",
                       static_cast<unsigned>(contentLen), static_cast<unsigned>(part->size));
@@ -553,6 +607,27 @@ bool installFromSocketLocked(int sock, const char* prefix, size_t prefixLen, siz
 
     size_t written = 0;
     if (prefixLen > contentLen) prefixLen = contentLen;   // never store bytes past the declared body
+    // Same refusal as the URL path, from the bytes already in hand. The offsets and the rule come
+    // from core/FirmwareImage.h, the same header the app's install path uses: hand-written
+    // offsets here would be a second copy of the image format to keep in step.
+    //
+    // Refused when the prefix is too SHORT to identify, rather than passed. identify() on a short
+    // buffer reports "no description" for an image that has one, so a guard that only rejects a
+    // described MoonBase image would wave it through whenever the headers arrived alone. Every
+    // real image carries its descriptor in the first 128 bytes.
+    if (prefixLen < mm::firmware::kIdentifyBytes) {
+        esp_ota_abort(handle);
+        std::snprintf(status_, sizeof(status_), "error: could not identify the image");
+        return false;
+    }
+    const auto incomingUp = mm::firmware::identify(
+        reinterpret_cast<const uint8_t*>(prefix), prefixLen);
+    if (incomingUp.described &&
+        std::strcmp(incomingUp.project, "projectMM-moonbase") == 0) {
+        esp_ota_abort(handle);
+        std::snprintf(status_, sizeof(status_), "error: that is a MoonBase image, not an app");
+        return false;
+    }
     if (prefixLen) {
         if (esp_ota_write(handle, prefix, prefixLen) != ESP_OK) {
             esp_ota_abort(handle);
@@ -707,6 +782,13 @@ void serveOne(int sock) {
         const esp_partition_t* app = appPartition();
         const bool ok = app && esp_ota_set_boot_partition(app) == ESP_OK;
         if (ok) std::snprintf(status_, sizeof(status_), "booting the app");
+        else if (!app) {
+            // appPartition returns null when THIS image is the one in the app slot. Before this,
+            // boot-app pointed the bootloader at itself and reported success, so the device
+            // "rebooted into the app" and arrived back here, forever.
+            std::snprintf(status_, sizeof(status_),
+                          "error: this MoonBase is in the app slot; reflash over USB");
+        }
         else    std::snprintf(status_, sizeof(status_), "error: no valid app image");
         sendResponse(sock, ok ? "200 OK" : "500 Internal Server Error", "text/plain", status_);
         installed = ok;   // reuse the reply-then-restart tail below
@@ -727,6 +809,16 @@ void serveOne(int sock) {
         } else {
             sendResponse(sock, "200 OK", "text/plain", "nothing to cancel");
         }
+    } else if (std::strncmp(head, "GET /api/version", 16) == 0) {
+        // This image's version, from the app descriptor IDF puts in every binary (PROJECT_VER,
+        // set by build_moonbase to the same string the application reports). Its own route
+        // rather than an addition to /moonbase, whose body the app UI parses as install status.
+        //
+        // The app reads the same version from the factory partition instead (otaMoonBaseVersion),
+        // because it cannot ask an image that is not running. Two readers, two situations: this
+        // one serves a user looking at MoonBase's own page, that one a user looking at the app's.
+        const esp_app_desc_t* d = esp_app_get_description();
+        sendResponse(sock, "200 OK", "text/plain", d ? d->version : "unknown");
     } else if (std::strncmp(head, "GET /moonbase", 13) == 0) {
         // Identity probe: the app UI polls this across the update cycle to tell which image is
         // answering at the shared address (the app 404s it). Body = the live install status, so

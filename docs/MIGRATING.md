@@ -73,6 +73,24 @@ calling it sound, so it is renamed rather than left as the odd one out.
 A restored config maps the old name to the new one and carries its value. On a device upgraded in
 place the control returns to its default (off); switch it back on where you had it.
 
+### AudioVolume is gone
+
+**Action: pick another effect.** Affects any device with an AudioVolume effect on a layer.
+
+It drew one bar from the audio level, which every audio-reactive effect does as a side effect of
+what it actually draws. There is no successor to map it onto, so a restored config carrying an
+`AudioVolumeEffect` node finds no such type and the layer comes up without it. `GEQ` is the nearest
+thing if a literal meter is what you want.
+
+### The Firmware card describes one image at a time
+
+**Action: none.** Affects nothing a user has set: every control involved is read-only.
+
+`firmwarePartition` is now `partition`, and `update_pct` is gone (an install's progress belongs in
+the overlay the UI raises while it runs, not in a row that sits at zero for the life of a device
+that is not mid-install). Where a device carries two images, a new `image` control selects whether
+those rows describe the running app or MoonBase in the factory slot.
+
 ### Noise2D is gone; Noise renders it
 
 **Action: re-set one control.** Affects any device with a Noise2D effect on a layer.

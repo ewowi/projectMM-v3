@@ -194,3 +194,28 @@ TEST_CASE("a table carries either two OTA slots or one slot plus a recovery app,
         CHECK((dualOta || safeboot));
     }
 }
+
+TEST_CASE("every MoonBase factory slot can be erased and holds a MoonBase image") {
+    // The app installs a new MoonBase by erasing this partition and streaming into it, and
+    // esp_partition_erase_range works in whole 4 KB sectors: an offset or size that is not a
+    // multiple would erase past the slot or leave a tail behind. Both are 64 KB aligned today
+    // (the app-alignment rule above), which satisfies this, but the erase depends on the weaker
+    // property and should say so rather than inherit it by luck.
+    constexpr uint32_t kSector = 4096;
+    constexpr uint32_t kImageBytes = 743 * 1024;   // the built image, which the slot must hold
+    int factories = 0;
+    for (const auto& t : allTables()) {
+        CAPTURE(t.file);
+        for (const auto& p : t.parts) {
+            if (p.type != "app" || p.subtype != "factory") continue;
+            ++factories;
+            CAPTURE(p.name);
+            CHECK((p.offset % kSector) == 0u);
+            CHECK((p.size % kSector) == 0u);
+            CHECK(p.size >= kImageBytes);
+        }
+    }
+    // A zero here would mean the tables stopped carrying MoonBase, or that this test stopped
+    // finding them: either way the checks above proved nothing.
+    CHECK(factories > 0);
+}

@@ -166,7 +166,11 @@ struct Parser {
     // Each function the class defined, with the IR index its body starts at. An IR index, not a byte
     // offset: the parser runs before lowering, so the byte an entry lands on is not known yet. The
     // emitter converts one to the other, which is the same seam a linker crosses.
-    struct FnMark { const char* name; uint8_t nameLen; uint16_t irStart; RetType ret; };
+    /// `params` is how many arguments the function declares. They live in the LOWEST frame
+    /// slots of its frame (0..params-1), which is what lets a caller stage arguments into them
+    /// with the same Spill the builtin path already uses: no backend calling convention changes,
+    /// and in particular Xtensa's windowed call8 sequence is untouched.
+    struct FnMark { const char* name; uint8_t nameLen; uint16_t irStart; RetType ret; uint8_t params; };
     FnMark             fns[kMaxEntryPoints] = {};
     uint8_t            fnCount = 0;
     /// What the function currently being parsed declared it returns, so a `return` can be
@@ -682,7 +686,36 @@ struct Parser {
                 if (std::strncmp(fns[i].name, lex.identBeg, lex.identLen) != 0) continue;
                 lex.advance();
                 if (!expect(Tok::LParen, "expected '(' after the function name")) return;
-                if (!expect(Tok::RParen, "a script function takes no arguments yet")) return;
+                // ARGUMENTS, evaluated into REGISTERS first and stored to the arena block only
+                // once they all are. The store cannot follow each argument, because evaluating a
+                // later one may itself contain a call (`paint(0, twice(21))`) whose own arguments
+                // go through the same block: writing as we go had the inner call overwrite the
+                // outer's first argument, and paint drew 21 where 0 belonged.
+                //
+                // Delaying the stores to the last possible moment is what makes ONE block enough:
+                // between the final store and the call there is nothing left to run.
+                const uint8_t want = fns[i].params;
+                VReg staged[kMaxScriptArgs] = {};
+                uint8_t got = 0;
+                while (lex.kind != Tok::RParen && lex.kind != Tok::End) {
+                    if (got > 0 && !expect(Tok::Comma, "expected ',' between arguments")) return;
+                    const VReg a = parseExpr();
+                    if (failed) return;
+                    if (got < want && got < kMaxScriptArgs) staged[got] = a;
+                    else freeTemp(a);
+                    got++;
+                }
+                if (!expect(Tok::RParen, "expected ')' to close the arguments")) return;
+                const uint8_t staging = got < want ? got : want;
+                for (uint8_t a = 0; a < staging && a < kMaxScriptArgs; a++) {
+                    emit({IrOp::StoreCtrl32, 0, staged[a], 0,0,0, scriptArgOffset(a), nullptr, {}});
+                    freeTemp(staged[a]);
+                }
+                if (got != want) {
+                    fail(got < want ? "too few arguments for this function"
+                                    : "too many arguments for this function");
+                    return;
+                }
                 // A call used as a VALUE takes what the callee returned. Refused when the callee
                 // declares void, since there is nothing to take and the script would otherwise
                 // read whatever the return register happened to hold.
@@ -1165,13 +1198,35 @@ struct Parser {
             fail("the condition must test the loop variable"); return false;
         }
         lex.advance();
-        if (!expect(Tok::Less, "expected '<' — it is the only comparison a for condition takes")) return false;
+        // `<` and `<=`. The emitted guard is BranchGe(counter, limit), which IS `counter < limit`,
+        // so `<=` is the same code against a limit one higher: computed once here rather than
+        // re-tested every iteration.
+        //
+        // `>` and `>=` are refused rather than half-supported. The loop's step is parsed but its
+        // DIRECTION is not modelled: a descending loop needs the guard, the back edge and the step
+        // to agree on which way the counter moves, and a `>` accepted here would emit an ascending
+        // guard around a descending body and run zero times or forever. Counting up with the index
+        // inverted inside is the workaround, and it is what the error says.
+        bool inclusive = false;
+        if (lex.kind == Tok::LessEq) { inclusive = true; lex.advance(); }
+        else if (lex.kind == Tok::Greater || lex.kind == Tok::GreaterEq) {
+            fail("a for counts up: use `<` or `<=` and invert the index inside");
+            return false;
+        }
+        else if (!expect(Tok::Less, "expected '<' or '<=' in the for condition")) return false;
         // The bound goes to its own slot: it is read at the entry guard and again at the back edge,
         // so it has to survive the body — and a body containing a call would otherwise have to keep
         // it in a register across that call.
         VReg limitTmp = parseExpr();
         if (exprIsFixed) { fail("a loop counts in whole numbers: write toInt(x)"); return false; }
         if (failed) return false;
+        if (inclusive) {
+            // `i <= n` is `i < n + 1`, so the guard below is untouched.
+            VReg one = alloc();
+            emit({IrOp::Const, one, 0,0,0,0, 1, nullptr, {}});
+            emit({IrOp::Add, limitTmp, limitTmp, one, 0,0, 0, nullptr, {}});
+            freeTemp(one);
+        }
         if (slotHighWater >= kMaxLocals) { fail("too many loop variables"); return false; }
         const uint8_t limitSlot = slotHighWater++;
         emit({IrOp::Spill, 0, limitTmp, 0,0,0, limitSlot, nullptr, {}});
@@ -1502,13 +1557,27 @@ struct Parser {
             emit({IrOp::BranchGe, 0, z, z, 0,0, lEnd, nullptr, {}});
             freeTemp(z);
             emit({IrOp::Label,    0, 0,0,0,0, lElse, nullptr, {}});
-            if (!expect(Tok::LBrace, "expected '{': an else body is braced")) return false;
-            const uint8_t elseLocal = localCount, elseSlot = slotHighWater;
-            while (!failed && lex.kind != Tok::RBrace && lex.kind != Tok::End)
-                if (!parseStatement()) return false;
-            if (failed) return false;
-            localCount = elseLocal; slotHighWater = elseSlot;
-            if (!expect(Tok::RBrace, "expected '}' to close the else body")) return false;
+            // `else if` is an else whose body is ONE if statement, which is what it means in C and
+            // what lets a chain of conditions read as a list rather than as a staircase of nested
+            // braces. Recursing here is the whole implementation: the inner if allocates its own
+            // labels and its own scope, and this one's end-label still closes the chain.
+            //
+            // Without it a mode select (`if (mode == 0) … else if (mode == 1) …`) had to be written
+            // as separate ifs re-testing the same variable, which costs a comparison per arm and,
+            // on a script with several modes, runs into the per-script label budget.
+            if (atKeyword("if", 2)) {
+                const uint8_t chainLocal = localCount, chainSlot = slotHighWater;
+                if (!parseIf()) return false;
+                localCount = chainLocal; slotHighWater = chainSlot;
+            } else {
+                if (!expect(Tok::LBrace, "expected '{': an else body is braced")) return false;
+                const uint8_t elseLocal = localCount, elseSlot = slotHighWater;
+                while (!failed && lex.kind != Tok::RBrace && lex.kind != Tok::End)
+                    if (!parseStatement()) return false;
+                if (failed) return false;
+                localCount = elseLocal; slotHighWater = elseSlot;
+                if (!expect(Tok::RBrace, "expected '}' to close the else body")) return false;
+            }
             emit({IrOp::Label, 0, 0,0,0,0, lEnd, nullptr, {}});
         } else {
             emit({IrOp::Label, 0, 0,0,0,0, lElse, nullptr, {}});
@@ -1679,15 +1748,71 @@ struct Parser {
     /// Stage 1 emits it INLINE at the point the class body reaches it, which is what makes `tick()`
     /// the whole program while it is the only entry point. Real per-function frames arrive with the
     /// call support in this same step; this is the parse shape they will attach to.
-    bool parseFunctionBody() {
+    /// The parameter list, parsed BEFORE the function emits anything: the count decides how many
+    /// copy-out instructions its prologue needs, and inserting into the IR afterwards would shift
+    /// every index the spill pass and the call lowering rely on.
+    bool parseParams(uint8_t* paramsOut) {
         if (!expect(Tok::LParen,  "expected '(' after the function name")) return false;
-        if (!expect(Tok::RParen,  "expected ')': parameters arrive with typed members")) return false;
-        if (!expect(Tok::LBrace,  "expected '{' to open the function body")) return false;
-        // Each function starts with an empty local scope and ends with one, so `tick()` and
-        // `tick20ms()` in the same class each get the whole frame rather than sharing what the
-        // first one happened to leave. Stage 1 emits functions inline, which is exactly why this is
-        // needed: without it the second function's locals would stack on top of the first's.
+        // The locals must be cleared BEFORE the parameters are declared: they become locals 0..N-1
+        // of this function's frame, and a leftover from the previous function would push them up
+        // and leave the caller staging into the wrong slots.
         localCount = 0; slotHighWater = 0;
+        uint8_t params = 0;
+        while (lex.kind != Tok::RParen && lex.kind != Tok::End) {
+            if (params > 0 && !expect(Tok::Comma, "expected ',' between parameters")) return false;
+            // A parameter is declared like a variable, and its type is read the same way, so
+            // `int`/`byte`/`bool` all mean here what they mean anywhere else.
+            if (!atTypeKeyword()) { fail("expected a parameter type"); return false; }
+            const CtrlType t = currentType();
+            lex.advance();
+            if (lex.kind != Tok::Ident) { fail("expected a parameter name"); return false; }
+            // The SAME name checks a local declaration runs. A parameter is a local, so a name
+            // that would be refused inside the body has to be refused in the list: without these
+            // a parameter could shadow a builtin or a system variable (making it unreachable for
+            // the whole function) or repeat another parameter, where lookups find the first while
+            // the caller stages a value into both slots.
+            if (isReservedWord(lex.identBeg, lex.identLen)) {
+                fail("that name is a reserved word"); return false;
+            }
+            if (table.find(lex.identBeg, lex.identLen)) {
+                fail("that name shadows a built-in function"); return false;
+            }
+            if (sysvars.find(lex.identBeg, lex.identLen)) {
+                fail("name is a system variable"); return false;
+            }
+            if (findLocal(lex.identBeg, lex.identLen) >= 0) {
+                fail("that name is already in use here"); return false;
+            }
+            if (findMember(lex.identBeg, lex.identLen) >= 0) {
+                fail("a member of that name is declared"); return false;
+            }
+            if (localCount >= kMaxLocals) { fail("too many locals"); return false; }
+            // Bounded by the ARENA BLOCK, not by kMaxCallArgs. The block carries kMaxScriptArgs
+            // values and the call site clamps to it, but the prologue emits one LoadCtrl32 per
+            // DECLARED parameter: a fifth read past the end of the arena allocation, and a later
+            // one wrote there. Script text is user-supplied on a network-reachable device, so the
+            // declaration is refused where it is written rather than clamped silently.
+            if (params >= moonlive::kMaxScriptArgs) {
+                fail("a function takes at most 4 parameters");
+                return false;
+            }
+            locals[localCount++] = {lex.identBeg, lex.identLen, slotHighWater, t};
+            slotHighWater++;
+            if (slotHighWater > slotsUsed) slotsUsed = slotHighWater;
+            params++;
+            lex.advance();
+        }
+        if (!expect(Tok::RParen,  "expected ')' to close the parameter list")) return false;
+        if (paramsOut) *paramsOut = params;
+        return true;
+    }
+
+    /// The body. Its parameters are already locals 0..N-1, declared by parseParams.
+    bool parseFunctionBody() {
+        if (!expect(Tok::LBrace,  "expected '{' to open the function body")) return false;
+        // Cleared above, BEFORE the parameters were declared, so they are in scope for the body:
+        // clearing here would discard them. Each function still starts with an empty scope, which
+        // is what stops one function's locals stacking on the next's.
         while (!failed && lex.kind != Tok::RBrace && lex.kind != Tok::End)
             if (!parseStatement()) return false;
         if (failed) return false;
@@ -1755,20 +1880,47 @@ struct Parser {
             // the wrong function, silently. Refused here, where a control name already is, so the
             // script author is told rather than the engine guessing.
             if (lex.identLen > kMaxEntryName) { fail("function name too long"); return false; }
-            fns[fnCount] = {lex.identBeg, static_cast<uint8_t>(lex.identLen),
-                            static_cast<uint16_t>(ir.count), ret};
+            // The NAME is captured before the SIGNATURE is parsed, since parsing moves the lexer,
+            // and the signature is parsed before anything is emitted: the parameter count decides
+            // how many copy-out instructions the prologue needs, and inserting into the IR after
+            // the fact would shift every index the spill pass and the call lowering rely on.
+            const char* const fnName = lex.identBeg;
+            const uint8_t fnNameLen = static_cast<uint8_t>(lex.identLen);
+            lex.advance();                       // the function name
+            uint8_t params = 0;
+            if (!parseParams(&params)) return false;
+            fns[fnCount] = {fnName, fnNameLen, static_cast<uint16_t>(ir.count), ret, params};
             curRet = ret;                        // every `return` below is checked against it
             // The IR carries the start INDEX; the lowering turns it into a byte offset.
             ir.fnIrStart[fnCount] = static_cast<uint16_t>(ir.count);
             ir.fnCount = static_cast<uint8_t>(fnCount + 1);
             fnCount++;
-            lex.advance();                       // the function name
             // Park the host arguments in this FUNCTION's frame. Read-only, so one store each, and
             // every later read is a Reload, which frees five registers for the body. Per function
             // rather than per program because each function owns its own frame now: a spill emitted
             // before the first prologue would write to a frame that does not exist yet.
             for (VReg v = 0; v < kFirstTemp; v++)
                 emit({IrOp::Spill, 0, v, 0,0,0, hostArgSlot(v), nullptr, {}});
+            // COPY THE ARGUMENTS OUT of the shared arena block into this function's own slots,
+            // before the body runs and so before it can make a call of its own. That copy is what
+            // lets ONE arena block serve every depth: see kScriptArgBase. It also has to happen
+            // here rather than lazily at each use, since a call in the middle of the body would
+            // overwrite the block the later uses would read.
+            for (uint8_t a = 0; a < params; a++) {
+                const VReg v = alloc();
+                emit({IrOp::LoadCtrl32, v, 0,0,0,0, scriptArgOffset(a), nullptr, {}});
+                // NARROWED to what the parameter was declared as, the same way an assignment to a
+                // local is (parseLocalDecl, and the assignment path). A `byte` parameter handed
+                // 300 kept 300, so the same value behaved differently depending on whether it
+                // arrived as an argument or was assigned inside the body.
+                //
+                // Here rather than at the call site: the callee knows the declared types (they are
+                // its own locals 0..N-1), while the caller would need them carried into FnMark,
+                // and one conversion in the prologue serves every call site.
+                narrowToType(v, locals[a].type);
+                emit({IrOp::Spill, 0, v, 0,0,0, a, nullptr, {}});
+                freeTemp(v);
+            }
             if (!parseFunctionBody()) return false;
             any = true;
         }

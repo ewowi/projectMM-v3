@@ -144,7 +144,12 @@ function lsRead(key, defaultVal) {
     return v !== null ? v : defaultVal;
 }
 
-let timingMode = lsRead(LS_TIMING, "fps");
+// MEASURED time by default, not derived rate. A module's tickTimeUs is what it actually cost;
+// the fps beside it is that number inverted, which reads as a frame rate the device could hit if
+// this module were the only thing running. On a card that is a claim about the whole pipeline made
+// from one part of it, so the honest default is the microseconds. The toggle still cycles to fps
+// for anyone comparing against a target rate.
+let timingMode = lsRead(LS_TIMING, "ms");
 let theme      = lsRead(LS_THEME, "dark");
 
 // ---------------------------------------------------------------------------
@@ -541,6 +546,13 @@ async function sendControl(moduleName, controlName, value) {
         if (!res.ok) {
             console.warn(`[control] POST ${moduleName}.${controlName} failed (status=${res.status})`);
         }
+        // The Firmware card's `image` picks WHICH PARTITION every other control describes, so the
+        // device rebinds version/build/firmware/partition to the other image and the card has to
+        // be redrawn from the new values. Refetched AFTER the POST rather than re-rendered before
+        // it (the expertMode case above), because the new values only exist once the device has
+        // switched. The routine WS push cannot carry it: renderCards is suppressed while the user
+        // is interacting, and operating this select is exactly that.
+        else if (moduleName === "Firmware" && controlName === "image") refetchState();
     } catch (e) {
         console.warn(`[control] POST ${moduleName}.${controlName} failed (error=${e && e.message ? e.message : e})`);
     }
@@ -1213,14 +1225,205 @@ function renderChildTabs(mod, childrenEl, depth) {
 }
 
 // ---- MoonBase update flow ----
-// On a MoonBase device (FirmwareUpdate exposes a `moonbase` control) the app cannot flash itself:
-// one app slot, and it is running from it. Instead it reboots into the MoonBase factory image,
-// which installs into the app slot and reboots back: same IP throughout (same MAC, same DHCP
-// lease). The whole cycle runs behind one full-screen overlay, shown BEFORE the reboot so there
-// is no dead gap. GET /moonbase is the identity probe: MoonBase answers it with its live install
-// status; the app 404s it: so "404 again after an install ran" means the new firmware is up.
+// On a MoonBase device the app cannot flash itself: one app slot, and it is running from it.
+// Instead it reboots into the MoonBase factory image, which installs into the app slot and reboots
+// back: same IP throughout (same MAC, same DHCP lease). The whole cycle runs behind one
+// full-screen overlay, shown BEFORE the reboot so there is no dead gap. GET /moonbase is the
+// identity probe: MoonBase answers it with its live install status; the app 404s it: so "404 again
+// after an install ran" means the new firmware is up.
+//
+// The marker is the `image` control, which the module publishes only where there are two images to
+// choose between. It was the `moonbase` control until that one was folded into the generic set as
+// `version`, which left this testing for a name nothing emits: the card silently lost its tab
+// strip AND its way into MoonBase, on a device that has one.
 function deviceHasMoonBase(mod) {
-    return (mod.controls || []).some(c => c.name === "moonbase");
+    return (mod.controls || []).some(c => c.name === "image");
+}
+
+// Ask before installing a MoonBase, in the app's own chrome rather than the browser's.
+//
+// A native confirm() is the one box in this UI that cannot be styled, and it looked it: a white
+// system panel over a dark card. This is the same native <dialog> the file editor uses, so Esc and
+// the backdrop close it for free. Resolves true to install, false to abandon.
+function askMoonBaseInstall() {
+    return new Promise((resolve) => {
+        const dlg = document.createElement("dialog");
+        dlg.className = "mb-ask";
+        const h = document.createElement("h3");
+        h.textContent = "Install a new MoonBase?";
+        const p1 = document.createElement("p");
+        // What is actually at stake, rather than a bare "are you sure": the device has no recovery
+        // image for the few seconds this takes.
+        p1.textContent = "MoonBase is the recovery image. While it is being written the device "
+                       + "has no recovery image, so do not power it off until this finishes.";
+        const p2 = document.createElement("p");
+        p2.className = "mb-ask-calm";
+        p2.textContent = "The device checks the image first and refuses anything that is not a "
+                       + "MoonBase image for this board, so a wrong file costs nothing.";
+        const row = document.createElement("div");
+        row.className = "mb-ask-row";
+        const cancel = document.createElement("button");
+        cancel.className = "fm-tool";
+        cancel.textContent = "Cancel";
+        const go = document.createElement("button");
+        go.className = "fm-tool mb-ask-go";
+        go.textContent = "Install";
+
+        const close = (value) => { dlg.close(); dlg.remove(); resolve(value); };
+        cancel.addEventListener("click", () => close(false));
+        go.addEventListener("click", () => close(true));
+        // Esc and the backdrop both reach here, so a dismissed dialog never leaves the promise
+        // pending and never installs anything.
+        dlg.addEventListener("close", () => { dlg.remove(); resolve(false); }, { once: true });
+
+        row.append(cancel, go);
+        dlg.append(h, p1, p2, row);
+        document.body.appendChild(dlg);
+        dlg.showModal();
+        go.focus();
+    });
+}
+
+// Byte counts out of a device status line, or null when it carries none.
+//
+// ONE PARSER for one wire shape. Every image writer reports progress as "<phase>: N of M bytes",
+// and the phase word differs by writer (`flashing`, `writing MoonBase`, MoonBase's own
+// `downloading`), so matching the numbers rather than the phrase is what lets one reader serve
+// them all. Two hand-written regexes had already drifted apart on whether `bytes` was required.
+//
+// An ERROR line can carry the same shape ("upload ended early (12 of 34 bytes)"), so it is
+// rejected here rather than left to the caller's check order.
+function installProgress(text) {
+    if (!text || text.startsWith("error")) return null;
+    const m = /(\d+) of (\d+) bytes/.exec(text);
+    if (!m) return null;
+    const read = parseInt(m[1], 10), total = parseInt(m[2], 10);
+    return total > 0 ? { read, total } : null;
+}
+
+// Raise the overlay over an install the DEVICE is performing, and follow it to the end.
+//
+// Every in-place install (a URL or a release, either image) answers 202 and then works on its own
+// task, so the only way to know how far it has got is to ask. The device puts its byte counts in
+// its status line, which is where both the text and the bar come from: one watcher, whichever
+// image is being written.
+//
+// TWO ENDINGS, because the two installs end differently and getting this wrong is what made an
+// overlay hang on a board where the install had actually succeeded:
+//   MoonBase   leaves the app running, so the status falls back to rest and the card is redrawn.
+//   the app    reboots into the image just written, so the device goes SILENT and comes back on
+//              the same address. Silence after work is therefore success, not a stall.
+//
+// Polls the device rather than the cached `state`: across a reboot the WebSocket is down and the
+// cache is frozen at the last frame before it went, which reads as an install that stopped.
+//
+// Not to be confused with moonbaseUpdateFlow, which carries an install across TWO reboots (into
+// MoonBase and back) and has its own retry and handoff handling.
+function watchInstall(kind) {
+    const ui = showUpdateOverlay();
+    ui.status(`Installing ${kind.label.toLowerCase()}\u2026`);
+    const deadline = Date.now() + 300000;
+    // Only treat an ending as SUCCESS once work was actually seen: the first poll can land before
+    // the install task has written anything, and rest or silence then means "not started yet".
+    let sawWork = false;
+    let silent = 0;
+
+    // The device's own Firmware status, or null when it is not answering.
+    const probe = async () => {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), 2500);
+        try {
+            const r = await fetch("/api/modules/Firmware", { cache: "no-store", signal: ctl.signal });
+            if (!r.ok) return null;
+            const mod = await r.json();
+            return (mod && mod.status) || "";
+        } catch (_) {
+            return null;
+        } finally {
+            clearTimeout(timer);
+        }
+    };
+
+    const tick = async () => {
+        if (Date.now() > deadline) { ui.fail("Install timed out."); return; }
+        const text = await probe();
+
+        if (text === null) {
+            // Not answering. During a rebooting install that is the reboot itself.
+            silent++;
+            if (kind.reboots && sawWork) {
+                ui.status("Rebooting\u2026");
+                if (silent > 90) { ui.fail(MOONBASE_SILENT_MSG); return; }
+            } else if (silent >= 4) {
+                ui.status("The device is not answering\u2026");
+            }
+        } else {
+            if (text.startsWith("error")) { ui.fail(text); return; }
+            const p = installProgress(text);
+            if (p) {
+                ui.status(`Installing ${fmSize(p.total)}\u2026`);
+                ui.progress(p.read, p.total);
+                sawWork = true;
+            } else if (text && text !== "idle") {
+                // A WORKING PHASE counts as work even with no byte counts. The device reports
+                // counts only when it knows the content length, and a chunked response (any
+                // proxy, or a server that does not send Content-Length) leaves it with none: the
+                // status then walks checking -> erasing -> writing -> idle without ever matching,
+                // so an install that SUCCEEDED sat behind the overlay until the five-minute
+                // timeout. The bar stays indeterminate there, which is honest: the total is
+                // genuinely unknown.
+                ui.status(`Installing ${kind.label.toLowerCase()}\u2026`);
+                sawWork = true;
+            }
+            // ANSWERING AGAIN AFTER SILENCE is the rebooting install's success: the image it
+            // wrote is the one now running.
+            if (kind.reboots && sawWork && silent > 0) {
+                ui.status(`${kind.label} installed`);
+                await fwSleep(1200);
+                location.reload();
+                return;
+            }
+            // Back to rest with no error is the non-rebooting install's success.
+            if (!kind.reboots && sawWork && (text === "" || text === "idle")) {
+                ui.status(`${kind.label} installed`);
+                await fwSleep(1200);
+                location.reload();
+                return;
+            }
+            silent = 0;
+        }
+        await fwSleep(1000);
+        tick();
+    };
+    tick();
+}
+
+// POST a file and paint a REAL progress bar while it uploads.
+//
+// fetch() cannot report upload progress at all (its streaming request bodies are not available
+// here), so this is the one place an XMLHttpRequest earns its keep: xhr.upload.onprogress is the
+// only way to know how far a browser-pushed install has got. The device-fetched installs report
+// through the byte counts in their status line instead, so every install has a bar.
+function uploadWithProgress(route, file, ui) {
+    return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open("POST", route);
+        xhr.setRequestHeader("Content-Type", "application/octet-stream");
+        xhr.upload.addEventListener("progress", (e) => {
+            if (e.lengthComputable) ui.progress(e.loaded, e.total);
+        });
+        xhr.addEventListener("load", () => {
+            // The device answers before it reboots, so a 2xx is the real success signal. Anything
+            // else carries the device's own reason in the JSON body.
+            if (xhr.status >= 200 && xhr.status < 300) { resolve(); return; }
+            let msg = `HTTP ${xhr.status}`;
+            try { msg = JSON.parse(xhr.responseText).error || msg; } catch (_) {}
+            reject(new Error(msg));
+        });
+        xhr.addEventListener("error", () => reject(new Error("the connection dropped")));
+        xhr.addEventListener("abort", () => reject(new Error("canceled")));
+        xhr.send(file);
+    });
 }
 
 function showUpdateOverlay() {
@@ -1398,11 +1601,10 @@ async function moonbaseUpdateFlow(opts) {
                 if (probe.text.startsWith("error")) throw new Error(probe.text);
                 // The unattended install reports "downloading: N of M bytes"; render it the
                 // way the file path reads, with a real bar.
-                const dl = probe.text.match(/downloading: (\d+) of (\d+) bytes/);
+                const dl = installProgress(probe.text);
                 if (dl) {
-                    const read = parseInt(dl[1], 10), total = parseInt(dl[2], 10);
-                    ui.status(`Installing ${fmSize(total || read)}\u2026`);
-                    ui.progress(read, total);
+                    ui.status(`Installing ${fmSize(dl.total || dl.read)}\u2026`);
+                    ui.progress(dl.read, dl.total);
                 } else {
                     // "idle" is MoonBase's quiescent state; mid-cycle it means the install
                     // has not started yet, which deserves better words than "Idle".
@@ -1735,30 +1937,198 @@ function createCard(mod, depth) {
     // device fetches the binary via /api/firmware/url: no browser CORS in
     // the data path. See docs/architecture.md § Firmware vs board.
     if (mod.type === "FirmwareUpdateModule") {
-        // Opening the Firmware card forces a fresh update check (the badge otherwise refreshes
-        // only on the 1 h cache cadence): so the badge agrees with the picker the user is about
-        // to use. Fire-and-forget; best-effort.
+        // TWO IMAGES, ONE PANEL. A device installs the app it runs and MoonBase the recovery
+        // image, described by the same four controls and installed the same three ways (a
+        // release, a URL, a file). The device's `image` control says which, and everything here
+        // reads it: one implementation, so the two cannot drift apart.
+        //
+        // The release row is install-picker's, the SAME component the web installer renders, so
+        // the release list, the compatible-firmware filtering, the remembered selection and the
+        // "2 weeks ago" labels have one home. The URL, File and image rows ride its
+        // installRowExtras seam, which exists for exactly this.
         checkFirmwareUpdate(true);
-        const ownFirmwareKey = (() => {
-            // The `firmware` variant key is this module's own control now (moved here from
-            // SystemModule), so read it straight off mod: no cross-module lookup.
-            const fwCtrl = (mod.controls || []).find(c => c.name === "firmware");
-            return fwCtrl && fwCtrl.value ? fwCtrl.value : null;
-        })();
+        const ctrlValue = (name) => {
+            const c = (mod.controls || []).find(x => x.name === name);
+            return c ? c.value : null;
+        };
+        const hasMoonBase = deviceHasMoonBase(mod);
+        const kind = (hasMoonBase && ctrlValue("image") === 1) ? "moonbase" : "app";
+        const KINDS = {
+            app: {
+                label: "App",
+                urlRoute: "/api/firmware/url",
+                uploadRoute: "/api/firmware/upload",
+                confirm: null,
+                reboots: true,
+            },
+            moonbase: {
+                label: "MoonBase",
+                urlRoute: "/api/firmware/moonbase-update-url",
+                uploadRoute: "/api/firmware/moonbase-update",
+                confirm: askMoonBaseInstall,
+                reboots: false,
+            },
+        };
+        const k = KINDS[kind];
+
+        // WHICH IMAGE, as a tab strip: the control chooses what every row is about, which reads
+        // as a tab rather than as one setting among the settings it governs. The device holds the
+        // selection (the control is marked hidden there), so this renders a fact rather than
+        // owning one. Inserted after the card's title, ahead of the rows it governs.
+        if (hasMoonBase) {
+            const strip = document.createElement("div");
+            strip.className = "tab-strip";
+            strip.setAttribute("role", "tablist");
+            ["app", "moonbase"].forEach((tabKind, i) => {
+                const tab = document.createElement("button");
+                tab.type = "button";
+                tab.className = tabKind === kind ? "tab tab-active" : "tab";
+                tab.setAttribute("role", "tab");
+                tab.setAttribute("aria-selected", tabKind === kind ? "true" : "false");
+                tab.textContent = KINDS[tabKind].label;
+                tab.addEventListener("click", () => {
+                    if (tabKind !== kind) sendControl(mod.name, "image", i);
+                });
+                strip.appendChild(tab);
+            });
+            const titleRow = controlsHost.querySelector(":scope > .card-title");
+            controlsHost.insertBefore(strip, titleRow ? titleRow.nextSibling : controlsHost.firstChild);
+        }
+
+        const status = document.createElement("span");
+        status.className = "fw-upload-status";
+        const say = (t) => { status.textContent = t; };
+
+        // Hand a URL to the device. Every install route answers 202 and works on its own task, so
+        // the overlay reports progress rather than this response.
+        const installUrl = async (url) => {
+            if (kind === "app" && hasMoonBase) {
+                // The app is written FROM MoonBase, so this reboots twice and moonbaseUpdateFlow
+                // carries it across the handover.
+                moonbaseUpdateFlow({ url });
+                return;
+            }
+            const res = await fetch(k.urlRoute, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ url }),
+            });
+            if (!res.ok) throw new Error(await errorMessage(res));
+            watchInstall(k);
+        };
+
+        // -- the rows that ride the picker's seam ---------------------------------------
+        const extras = document.createElement("div");
+
+        const urlRow = document.createElement("div");
+        urlRow.className = "control-row fw-upload-row";
+        const urlLabel = document.createElement("span");
+        urlLabel.className = "control-label";
+        urlLabel.textContent = "URL";
+        const urlField = document.createElement("input");
+        urlField.type = "url";
+        urlField.className = "fw-url-field";
+        urlField.placeholder = kind === "moonbase"
+            ? "http://…/shared-moonbase-<chip>.bin" : "http://…/firmware.bin";
+        const urlBtn = document.createElement("button");
+        urlBtn.className = "fm-tool";
+        urlBtn.textContent = "Install";
+        urlBtn.addEventListener("click", async () => {
+            const url = urlField.value.trim();
+            if (!url) return;
+            if (k.confirm && !await k.confirm()) return;
+            urlBtn.disabled = true;
+            say("installing…");
+            try {
+                await installUrl(url);
+            } catch (err) {
+                say("install failed: " + err.message);
+            } finally {
+                urlBtn.disabled = false;
+            }
+        });
+        urlRow.append(urlLabel, urlField, urlBtn);
+        extras.appendChild(urlRow);
+
+        const fileRow = document.createElement("div");
+        fileRow.className = "control-row fw-upload-row";
+        const fileLabel = document.createElement("span");
+        fileLabel.className = "control-label";
+        fileLabel.textContent = "File";
+        const upBtn = document.createElement("button");
+        upBtn.className = "fm-tool fm-tool--icon";
+        upBtn.textContent = "↥";
+        upBtn.title = `Install ${k.label.toLowerCase()} from a file on your computer`;
+        const upInput = document.createElement("input");
+        upInput.type = "file";
+        upInput.accept = ".bin,application/octet-stream";
+        upInput.style.display = "none";
+        upInput.addEventListener("change", async () => {
+            const file = (upInput.files || [])[0];
+            upInput.value = "";                   // re-picking the same file re-fires change
+            if (!file) return;
+            if (k.confirm && !await k.confirm()) return;
+            if (kind === "app" && hasMoonBase) {
+                // The app cannot flash itself: the browser pushes this file to MoonBase.
+                moonbaseUpdateFlow({ file });
+                return;
+            }
+            upBtn.disabled = true;
+            // The overlay, like every other install. This is the one whose progress the DEVICE
+            // cannot report (the request stays open for the transfer), so the bar is driven from
+            // the upload itself, but a user should not have to know which install they picked to
+            // know where the progress appears.
+            const ui = showUpdateOverlay();
+            ui.status(`Installing ${fmSize(file.size)}…`);
+            try {
+                await uploadWithProgress(k.uploadRoute, file, ui);
+                if (k.reboots) {
+                    ui.status("Rebooting…");
+                    await fwSleep(4000);
+                } else {
+                    ui.status(`${k.label} installed`);
+                    await fwSleep(1200);
+                }
+                location.reload();
+            } catch (err) {
+                ui.fail("Install failed: " + err.message);
+            } finally {
+                upBtn.disabled = false;
+            }
+        });
+        upBtn.addEventListener("click", () => upInput.click());
+        fileRow.append(fileLabel, upBtn, upInput);
+        extras.appendChild(fileRow);
+        extras.appendChild(status);
+
+        // -- the shared picker ----------------------------------------------------------
         const mount = document.createElement("div");
         mount.className = "install-picker-host";
         controlsHost.appendChild(mount);
         installPicker.init({
             container: mount,
-            ownFirmwareKey,
-            // Device already knows its deviceModel (SystemModule): picker is for
-            // releases + firmware compatibility only. Showing a board picker
-            // here would invite the user to mis-narrow the firmware list.
+            // MoonBase ships ONE image per chip rather than one per variant, so on that tab the
+            // picker offers the shared-moonbase assets and matches on the CHIP the device
+            // reports. Same component, same release list, a different asset family.
+            moonbaseOnly: kind === "moonbase",
+            // Both tabs read the SAME control: the device sets `firmware` to the variant on the
+            // app tab and to the chip on the MoonBase tab, precisely because that is what names
+            // the release asset in each case. Re-deriving the chip from SystemModule here was a
+            // second mechanism for a job the device had already done, with a JS transform
+            // ("ESP32-S3" -> "esp32s3") that merely coincided with the build system's naming.
+            ownFirmwareKey: moonbaseAssetKeyFrom(ctrlValue("firmware")),
+            // Device already knows its deviceModel (SystemModule): picker is for releases +
+            // firmware compatibility only. A board picker here would invite the user to
+            // mis-narrow the firmware list.
             enableBoardPicker: false,
+            installRowExtras: extras,
+            // After the Install button, not before: these are other ways to install, so putting
+            // them above would separate that button from the two dropdowns it acts on.
+            extrasAfterInstall: true,
             onInstall: async (_firmware, _manifestUrl, binaryUrl, entry) => {
                 // A desktop build has no OTA: it updates by downloading a new release and being
-                // replaced by hand. So hand the browser the file and let it do what it does with a
-                // download, rather than POSTing to a route that would 501 here.
+                // replaced by hand. So hand the browser the file rather than POSTing to a route
+                // that would 501 here.
                 if (entry && entry.isDesktop) {
                     const a = document.createElement("a");
                     a.href = binaryUrl;
@@ -1769,86 +2139,30 @@ function createCard(mod, depth) {
                     a.remove();
                     return;
                 }
-                if (deviceHasMoonBase(mod)) {
-                    // MoonBase device: the whole install runs unattended behind the overlay.
-                    moonbaseUpdateFlow({ url: binaryUrl });
-                    return;
-                }
-                const res = await fetch("/api/firmware/url", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ url: binaryUrl }),
-                });
-                if (!res.ok) throw new Error(await errorMessage(res));
+                if (k.confirm && !await k.confirm()) return;
+                await installUrl(binaryUrl);
             },
         });
 
-        // Install-from-file: pick a locally-built .bin and stream its bytes to /api/firmware/upload,
-        // which feeds platform::otaWriteStream (esp_ota_write). Complements the release picker above -
-        // the release path has the device fetch a URL; this path has the browser push the body, so a
-        // dev build that isn't a published release can be flashed straight over the network. The device
-        // reboots on success (no response body), so a completed POST that closes mid-flight is success.
-        const fileRow = document.createElement("div");
-        fileRow.className = "fw-upload-row";
-        const upBtn = document.createElement("button");
-        upBtn.className = "fm-tool fm-tool--icon";
-        upBtn.textContent = "↥";   // same upload glyph as the file-manager toolbar
-        upBtn.title = "Install from file: flash a firmware .bin from your computer over the network (OTA)";
-        const upStatus = document.createElement("span");
-        upStatus.className = "fw-upload-status";
-        const upInput = document.createElement("input");
-        upInput.type = "file";
-        upInput.accept = ".bin,application/octet-stream";
-        upInput.style.display = "none";
-        upInput.addEventListener("change", async () => {
-            const file = (upInput.files || [])[0];
-            upInput.value = "";                   // reset so re-picking the same file re-fires change
-            if (!file) return;
-            if (deviceHasMoonBase(mod)) {
-                // MoonBase device: reboot into MoonBase, then the browser pushes this file to it.
-                moonbaseUpdateFlow({ file });
-                return;
-            }
-            upBtn.disabled = true;
-            upStatus.textContent = `uploading ${fmSize(file.size)}…`;
-            try {
-                const res = await fetch("/api/firmware/upload", {
-                    method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file,
-                });
-                // The device sends a 200 once the image is committed, THEN reboots: so res.ok is the
-                // real success signal. A 4xx/5xx carries the device's ota error in the JSON body.
-                if (res.ok) upStatus.textContent = "flashed: device rebooting";
-                else throw new Error(await errorMessage(res));
-            } catch (err) {
-                // A network error mid-upload is a genuine failure now (the device answers before it
-                // reboots), so surface it as such rather than assuming a reboot.
-                upStatus.textContent = "upload failed: " + err.message;
-            } finally {
-                upBtn.disabled = false;
-            }
-        });
-        upBtn.addEventListener("click", () => upInput.click());
-        fileRow.appendChild(upBtn);
-        fileRow.appendChild(upStatus);
-        fileRow.appendChild(upInput);
-        // MoonBase devices: open the maintenance image directly: reboot into MoonBase and land
-        // on its page (same address, so a reload gets there once it answers). The way back is
-        // MoonBase's own "Boot the app" button.
-        if (deviceHasMoonBase(mod)) {
+        // BELOW everything, because it belongs to neither image: rebooting into MoonBase is not
+        // an install, it is how a user reaches the recovery image to work there by hand.
+        if (hasMoonBase) {
+            const mbRow = document.createElement("div");
+            mbRow.className = "control-row fw-upload-row";
             const mbBtn = document.createElement("button");
             mbBtn.className = "fm-tool";
-            mbBtn.textContent = "MoonBase";
-            mbBtn.title = "Reboot into MoonBase, the maintenance image, install firmware, then boot back";
+            mbBtn.textContent = "Restart in MoonBase";
+            mbBtn.title = "Reboot into MoonBase, the maintenance image; its own page has the way back";
             mbBtn.addEventListener("click", async () => {
                 const ui = showUpdateOverlay();
-                ui.status("Restarting into MoonBase\u2026");
+                ui.status("Restarting into MoonBase…");
                 try { await fetch("/api/firmware/moonbase", { method: "POST" }); } catch (_) {}
                 if (await waitForMoonBase(Date.now() + 120000)) { location.reload(); return; }
                 ui.fail(MOONBASE_SILENT_MSG);
             });
-            fileRow.appendChild(mbBtn);
+            mbRow.appendChild(mbBtn);
+            controlsHost.appendChild(mbRow);
         }
-        controlsHost.appendChild(fileRow);
     }
 
     // -- Children block + footer --
@@ -1963,6 +2277,18 @@ function formatStats(mod) {
     return head + statusChip;
 }
 function formatStatsTitle(mod) {
+    // The tooltip carries the OTHER unit, so both readings are available without clicking: the
+    // card shows one, hovering says what it is in the other. A per-module fps is named as what it
+    // is, a rate this module alone could sustain, because read as a frame rate it is a claim about
+    // the whole pipeline made from one part of it.
+    const us = (mod.tickTimeUs !== undefined) ? mod.tickTimeUs : 0;
+    if (us > 0) {
+        const fps = Math.round(1_000_000 / us);
+        const other = timingMode === "fps"
+            ? (us < 1000 ? us + " µs" : (us / 1000).toFixed(2) + " ms") + " per tick"
+            : fps.toLocaleString() + " fps if this module ran alone";
+        return other + "  ·  click to toggle";
+    }
     return "Click to toggle fps/ms";
 }
 
@@ -3163,34 +3489,27 @@ function createControl(moduleName, moduleType, ctrl) {
                                 alert("could not download " + file + ": " + (e && e.message ? e.message : e));
                                 return;
                             }
-                            // The device re-lists its .mlp files on the next state fetch, so the
-                            // palette now HAS an index. Find it by name and select it, which is
-                            // what the user asked for by picking it.
+                            // The write itself republishes the option list: POST /api/file ends in
+                            // applyFileChanged() -> requestPrepareTree() -> Drivers::prepare(), which
+                            // re-lists the `.mlp` files. So one fetch after the download sees the new
+                            // palette and it selects in a single click, like every other script role.
                             mlCatalog = null;               // it is local now: drop the cached list
-                            const want = file.replace(/\.mlp$/, "");
-                            // The device only re-lists its .mlp files when its controls rebuild, which
-                            // can land a beat after the state fetch. So look, and if the new palette
-                            // is not there yet, fetch once more before giving up: without the retry a
-                            // download that worked ended in nothing happening and no message.
+                            // Match on the FILENAME, extension included: the device publishes each
+                            // scripted palette under its file name (`spectrum.mlp`), and only the
+                            // picker's displayName drops the extension. Comparing the stripped form
+                            // never matched, so a download that worked ended in an error.
                             const findCtrl = () => {
                                 const mod = allModules().find(m => m.name === moduleName);
                                 return mod && Array.isArray(mod.controls)
                                      && mod.controls.find(x => x.name === ctrl.name);
                             };
-                            const findIdx = () => ((findCtrl() || {}).options || [])
-                                                   .findIndex(o => o.name === want);
                             await refetchState();
-                            let idx = findIdx();
+                            const idx = ((findCtrl() || {}).options || [])
+                                          .findIndex(o => o.name === file);
                             if (idx < 0) {
-                                await new Promise(r => setTimeout(r, 600));
-                                await refetchState();
-                                idx = findIdx();
-                            }
-                            if (idx < 0) {
-                                // Downloaded, but the device has not published it. Say so: the file IS
-                                // on the device, so re-opening the picker will offer it.
-                                alert(want + " was downloaded but is not in the palette list yet - "
-                                      + "reopen the picker to select it.");
+                                // Only reachable if the device accepted the write and then did not
+                                // list the file, which is a device-side fault rather than a wait.
+                                alert("could not select " + file + ": the device saved it but does not list it");
                                 return;
                             }
                             const fresh = document.querySelector(
@@ -4773,6 +5092,21 @@ function syncVisibleControls(mod) {
     // other's rows in a loop: tearing down (and closing) any open <select>.
     const host = card.querySelector(":scope > .card-controls-collapse") || card;
 
+    // THE FIRMWARE CARD'S IMAGE TABS, which this patch path would otherwise never touch. The strip
+    // is built in createCard, and so are the install routes it implies: `kind` is captured in the
+    // handlers' closures. So a stale strip is not merely a wrong highlight, it is a card whose
+    // buttons write the OTHER partition than the one it names. Rebuild rather than repaint the
+    // highlight: the closures cannot be patched.
+    //
+    // The UI has two render paths and a rule must live in both (see renderChildTabs' updateTabDot,
+    // written for the other tab strip for exactly this reason).
+    const strip = card.querySelector(":scope > .tab-strip");
+    if (strip) {
+        const sel = (mod.controls.find(c => c.name === "image") || {}).value;
+        const shown = [...strip.children].findIndex(t => t.classList.contains("tab-active"));
+        if (sel !== undefined && shown >= 0 && shown !== sel) { renderCards(); return true; }
+    }
+
     const wantNames = mod.controls.filter(c => controlRendersGenerically(mod, c)).map(c => c.name);
     const haveRows = [...host.querySelectorAll(":scope > .control-row[data-key]")];
     const haveNames = haveRows.map(r => r.dataset.key);
@@ -5075,7 +5409,7 @@ function updateModuleControls(mod) {
 }
 
 // Per-type equality for reset-button highlighting. bool→boolish, ipv4/text→
-// string compare, everything else → numeric. Centralised so the rules can't
+// string compare, everything else → numeric. Centralized so the rules cannot
 // drift between createControl and updateModuleControls.
 function controlValuesEqual(ctrl, def) {
     if (ctrl.type === "bool") return !!ctrl.value === !!def;
@@ -5891,10 +6225,18 @@ function updateStatusBar() {
     const uptimeCtrl = ctrls.find(c => c.name === "uptime");
     const heapCtrl = ctrls.find(c => c.name === "heap");
     const blockCtrl = ctrls.find(c => c.name === "maxBlock");
+    const fpsCtrl = ctrls.find(c => c.name === "fps");
     const statsEl = document.getElementById("sys-stats");
     if (statsEl) {
         const parts = [];
         if (uptimeCtrl) parts.push(uptimeCtrl.value);
+        // The WHOLE pipeline's rate, which is the one place fps is the honest unit: the device
+        // really does complete this many frames a second, where a per-module fps is one part's
+        // cost inverted. Before the memory badges because it is the number that moves.
+        if (fpsCtrl && fpsCtrl.value) {
+            const f = Number(fpsCtrl.value);
+            parts.push("🕒 " + (f >= 1000 ? Math.round(f / 1000) + "K fps" : f + " fps"));
+        }
         if (heapCtrl && heapCtrl.value !== undefined && heapCtrl.total) {
             const freeKb = Math.round((heapCtrl.total - heapCtrl.value) / 1024);
             parts.push("🧠 " + freeKb + "K");
@@ -6035,6 +6377,13 @@ function deviceFirmwareInfo() {
     const fw = findModule("Firmware") || (state.modules.find(m => m.type === "FirmwareUpdateModule"));
     if (!fw) return null;
     const ctrls = fw.controls || [];
+    // ONLY WHILE THE CARD DESCRIBES THE APP. `image` rebinds version/build/firmware/partition to
+    // whichever partition is selected, so on the MoonBase tab these read MoonBase: the badge would
+    // then compare a recovery image's version against app releases and look for a firmware asset
+    // named after a chip. The badge is global chrome, so it would stay wrong for as long as the
+    // user left that tab selected.
+    const image = (ctrls.find(c => c.name === "image") || {}).value;
+    if (image === 1) return null;
     const version = (ctrls.find(c => c.name === "version") || {}).value;
     const firmware = (ctrls.find(c => c.name === "firmware") || {}).value;
     // "unknown" is what a desktop build reports: no ESP32 variant to name.
@@ -6058,6 +6407,18 @@ function showUpdateBadge(badge, tag, label, isDesktop) {
     badge.dataset.desktop = isDesktop ? "1" : "";
     badge.hidden = false;
 }
+
+// The key that names a release asset, from the device's own `firmware` control. On the app tab
+// that is already the variant ("esp32s3-n16r8"); on the MoonBase tab the device reports the chip
+// ("ESP32-S3"), which the asset spells "esp32s3" after the build directory's IDF target.
+//
+// Null when the control has not arrived: the picker treats that as "offer everything" rather than
+// as a key nothing matches, which is the difference between a full list and a silently empty one.
+function moonbaseAssetKeyFrom(fw) {
+    if (!fw) return null;
+    return /^ESP32/.test(fw) ? fw.toLowerCase().replace(/-/g, "") : fw;
+}
+
 
 // Is there a newer STABLE release than the device's version, with a compatible .bin?
 // Returns the stable tag (e.g. "v2.1.0") or null. /latest excludes prereleases.
@@ -7118,6 +7479,8 @@ function fmMountEditor(host, relPath, opts = {}) {
     // the check while the first request is still in flight. Saves are serialized rather than
     // dropped, because the second trigger may carry newer keystrokes than the first.
     let saving = null;
+    /// The file's text as it was LOADED, for the no-op fork check in save().
+    let loadedText = null;
     const save = () => {
         if (body.readOnly || !dirty || !path) return Promise.resolve();
         saving = (saving || Promise.resolve()).then(async () => {
@@ -7125,6 +7488,17 @@ function fmMountEditor(host, relPath, opts = {}) {
             const saved = body.value;                       // what THIS request writes
             status.textContent = "saving…";
             const dest = savePath ? savePath(path) : path;
+            // A FORK THAT CHANGES NOTHING IS NOT A FORK. When the destination differs from the file
+            // that was read, saving creates a user copy that shadows the shipped one forever: every
+            // later library update becomes invisible behind it. If the text is byte-identical to
+            // what was read, there is nothing to shadow it WITH, so write nothing and let the
+            // shipped copy keep winning. Opening a script and pressing Save is otherwise enough to
+            // pin it at today's version, which is the trap this whole mechanism exists to avoid.
+            if (dest !== path && loadedText !== null && saved === loadedText) {
+                status.textContent = "unchanged";
+                setDirty(false);
+                return;
+            }
             const r = await fmSaveFrom(body, dest);
             status.textContent = r.message;
             // A failed write (no space, a vanished path) must not be silent. The modal shows it on
@@ -7135,9 +7509,15 @@ function fmMountEditor(host, relPath, opts = {}) {
             // request means there are newer bytes on screen that nobody has saved yet.
             if (r.ok && body.value === saved) {
                 setDirty(false);
+                // The fork EXISTS now, so this pane is editing it rather than the file it came
+                // from. Without this the no-op guard above keeps comparing against the shipped
+                // copy: editing back to the original text would report "unchanged" and skip the
+                // write, leaving the user's file holding the previous edit.
+                path = dest;
+                loadedText = saved;
                 // Report where it LANDED, not where it came from: a caller that refreshes a listing
                 // needs to know a new file now exists in the user's directory.
-                if (onSaved) onSaved(savePath ? savePath(path) : path);
+                if (onSaved) onSaved(dest);
             }
         });
         return saving;
@@ -7185,6 +7565,9 @@ function fmMountEditor(host, relPath, opts = {}) {
         }
         const r = await fmLoadInto(body, path, size, ac.signal);
         if (r.aborted || ac !== loadAbort) return;   // a newer load started: that one owns the pane
+        // What arrived, so save() can tell a real edit from an untouched file. Only used when the
+        // save destination differs from the read path (a factory script being forked).
+        loadedText = body.value;
         body.readOnly = r.readOnly;
         saveBtn.disabled = r.readOnly;
         paintHighlight();          // the file just arrived: paint what it says

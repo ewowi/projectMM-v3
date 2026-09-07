@@ -88,6 +88,8 @@ function makeState() {
         // the node on every render(), so the same instance survives the
         // re-renders triggered by release-list reloads.
         installRowExtras: null,
+        extrasAfterInstall: false,
+        moonbaseOnly: false,
         releases: [],          // normalised release records from the API
         sortedReleases: [],    // releases sorted newest-first; render() fills this
         releaseIdx: 0,         // index into sortedReleases
@@ -176,7 +178,7 @@ async function loadReleases({ bypassCache = false } = {}) {
 // firmware-<firmware>-v<ver>(.bin|-bootloader.bin|-partition-table.bin|-ota-data.bin).
 // The picker needs: per-firmware → {manifestUrl, binaryUrl}. Manifest URL drives
 // ESP Web Tools (web installer); binary URL drives /api/firmware/url (device OTA).
-function parseFirmwaresFromAssets(assets, tag) {
+function parseFirmwaresFromAssets(assets, tag, moonbaseOnly = false) {
     if (!assets) return [];
     const firmwares = new Map();
     const manifestRe = /^manifest-(.+)\.json$/;
@@ -223,11 +225,27 @@ function parseFirmwaresFromAssets(assets, tag) {
     }
 
     for (const a of assets) {
-        // Reject the part-suffixed .bins (bootloader / partition-table / ota-data /
-        // moonbase): they're install fragments, not the main image. The OTA path needs
-        // the app image only. The shared-moonbase asset is doubly excluded (the `shared-`
-        // prefix already fails binaryRe): offering MoonBase as an OTA target would replace
-        // a device's app with an image that can only install, not run the show.
+        // MoonBase, when the caller asked for it. `shared-moonbase-<chip>.bin` is one image per
+        // CHIP rather than per variant, and it has no manifest of its own, so it is admitted here
+        // and exempted from the manifest requirement below.
+        //
+        // Only the ON-DEVICE card asks. The web installer writes MoonBase already, and always
+        // has: a serial flash applies the whole manifest, which stages this same asset at the
+        // factory offset (generate_manifest.py). What is new is installing it OVER THE NETWORK,
+        // into a device whose recovery image is broken and which therefore cannot be reached the
+        // usual way without a cable. So this mode is off by default and the installer is
+        // unaffected: it was excluded outright while the only network route wrote the APP slot,
+        // where an image that can install but not run the show would have been a brick.
+        if (moonbaseOnly) {
+            const mb = /^shared-moonbase-(.+)\.bin$/.exec(a.name);
+            if (mb) {
+                firmwares.set(mb[1], { firmware: mb[1], manifestUrl: null,
+                                       binaryUrl: a.browser_download_url, isMoonBase: true });
+            }
+            continue;
+        }
+        // Reject the part-suffixed .bins (bootloader / partition-table / ota-data / moonbase):
+        // they're install fragments, not the main image. The OTA path needs the app image only.
         if (/(?:-(?:bootloader|partition-table|ota-data)|moonbase[^/]*|-slot0)\.bin$/.test(a.name)) continue;
         const m = binaryRe.exec(a.name);
         if (m) {
@@ -241,7 +259,7 @@ function parseFirmwaresFromAssets(assets, tag) {
     // mid-release-publish race) shouldn't appear in the dropdown. A desktop archive has no
     // manifest by nature (there is nothing to flash), so it qualifies on its download alone.
     return Array.from(firmwares.values())
-        .filter(f => f.binaryUrl && (f.manifestUrl || f.isDesktop));
+        .filter(f => f.binaryUrl && (f.manifestUrl || f.isDesktop || f.isMoonBase));
 }
 
 // Merge a release's published firmwares with locally-staged extras (preview only).
@@ -423,7 +441,13 @@ function render(state) {
     // keep firing across renders.
     if (state.installRowExtras) {
         const installRow = state.container.querySelector("#rp-install-row");
-        state.container.insertBefore(state.installRowExtras, installRow);
+        // BEFORE the Install row by default, which is where an option that MODIFIES the install
+        // belongs (the web installer's erase checkbox). `extrasAfterInstall` puts them after
+        // instead, for rows that are alternative ways to install rather than options on this one:
+        // the device card's URL and File rows, which otherwise pushed the Install button away
+        // from the two dropdowns it acts on.
+        if (state.extrasAfterInstall) installRow.after(state.installRowExtras);
+        else state.container.insertBefore(state.installRowExtras, installRow);
     }
 
     const boardEl = state.container.querySelector("#rp-board");
@@ -515,7 +539,12 @@ function render(state) {
         const wantDesktop = state.ownFirmwareKey === "unknown";
         let compatible = (r.firmwares || [])
             .filter(f => !!f.isDesktop === wantDesktop)
-            .filter(f => isCompatible(state.ownFirmwareKey, f.firmware));
+            // A MoonBase key is a CHIP ("esp32s3"), not a firmware variant, so the variant rule
+            // (which strips -eth and compares) does not apply: an exact chip match is the whole
+            // question, and offering another chip's image is what the device's own header check
+            // exists to refuse.
+            .filter(f => state.moonbaseOnly ? f.firmware === state.ownFirmwareKey
+                                            : isCompatible(state.ownFirmwareKey, f.firmware));
         // Narrow by selected board (web installer only — selectedBoard stays
         // null on the on-device picker since the board <select> isn't rendered).
         // Defensive: a board the user picked that isn't in the catalog (e.g.
@@ -824,6 +853,7 @@ export const installPicker = {
      */
     async init({ container, ownFirmwareKey, onInstall, onDetect = null,
                  enableBoardPicker = true, installRowExtras = null, hasPort = null,
+                 moonbaseOnly = false, extrasAfterInstall = false,
                  boardSupport = null, extraFirmwaresByTag = null }) {
         const state = makeState();
         state.container = container;
@@ -832,6 +862,10 @@ export const installPicker = {
         state.onDetect = onDetect;
         state.enableBoardPicker = enableBoardPicker;
         state.installRowExtras = installRowExtras;
+        state.extrasAfterInstall = extrasAfterInstall;
+        // Offer the MOONBASE image instead of the app firmwares: one per chip, unversioned, and
+        // installed into the factory slot. The on-device card sets this from its image selector.
+        state.moonbaseOnly = moonbaseOnly;
         state.hasPort = hasPort;
         state.boardSupport = boardSupport;
 
@@ -874,7 +908,7 @@ export const installPicker = {
             published_at: r.published_at || r.created_at,
             html_url: r.html_url,
             firmwares: mergeFirmwares(
-                parseFirmwaresFromAssets(r.assets, r.tag_name),
+                parseFirmwaresFromAssets(r.assets, r.tag_name, state.moonbaseOnly),
                 extraFirmwaresByTag && extraFirmwaresByTag[r.tag_name]),
         }))
         // Drop releases with zero usable firmwares (no firmware-* / manifest-* assets).

@@ -427,8 +427,24 @@ def build_output(build_dir, clean=True):
 
     # FAIL CLOSED. -Wfunction-effects exists only on Clang 20+; CMake silently omits the flag
     # on anything else, and this script would then report "0 findings" from a build that never
-    # ran the check — indistinguishable from a clean tree. A zero is only trustworthy if the
+    # ran the check: indistinguishable from a clean tree. A zero is only trustworthy if the
     # warning is actually enabled, so say so instead of reporting a comfortable number.
+    #
+    # INCREMENTAL asks a narrower question and needs a narrower guard. A run where nothing
+    # recompiled legitimately produces no diagnostics, so an empty log there is not proof the
+    # flag is missing. What it IS proof of is that nothing was measured, and a gate that prints
+    # a tick for an empty read is the silent zero this whole function exists to prevent. So the
+    # caller is told which of the two happened rather than being handed a clean bill either way.
+    if not clean and "[-Wfunction-effects]" not in out:
+        compiled = any(line.startswith("[") and ".cpp" in line for line in out.splitlines())
+        print("Nothing was measured: this incremental build produced no -Wfunction-effects\n"
+              + ("output, and no translation unit recompiled. Every file is cached, so this run\n"
+                 "says nothing about the tree. Re-run without --incremental for the full picture.\n"
+                 if not compiled else
+                 "output even though something recompiled, which means the warning is not enabled\n"
+                 "(it needs Clang 20+; CMake omits it silently otherwise).\n"),
+              file=sys.stderr)
+        return None
     if clean and "[-Wfunction-effects]" not in out:
         print("No -Wfunction-effects diagnostics in the build output.\n"
               "That means either the tree really is clean, or the compiler does not support the\n"

@@ -1,6 +1,6 @@
 # Plan — Stage 1 (palette) of the MoonLight migration
 
-The first executable slice of the [migration plan](Plan-20260630%20-%20MoonLight%20migration%20(multi-stage).md): the palette foundation. Design already decided in moonlight-palettes-data.md; this plan is the file split + the implementation specifics. The shared **primitive library** (beat/noise/blend/draw) and the **GoL re-port** are *separate* slices of Stage 1, planned + committed after this — palette is the load-bearing one, done first and alone so it's reviewable.
+The first executable slice of the [migration plan](../Plan-20260630%20-%20MoonLight%20migration%20%28multi-stage%29.md): the palette foundation. Design already decided in moonlight-palettes-data.md; this plan is the file split + the implementation specifics. The shared **primitive library** (beat/noise/blend/draw) and the **GoL re-port** are *separate* slices of Stage 1, planned + committed after this — palette is the load-bearing one, done first and alone so it's reviewable.
 
 ## What ships
 

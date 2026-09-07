@@ -22,6 +22,7 @@
 #include "light/effects/FluidEffect.h"
 #include "light/effects/NebulaEffect.h"
 #include "light/effects/NoiseEffect.h"
+#include "light/effects/FixedPointEffect.h"
 #include "light/effects/MovingHeadEffect.h"
 #include "light/effects/PacmanEffect.h"
 #include "light/effects/PlasmaEffect.h"
@@ -36,7 +37,6 @@
 #include "light/effects/RipplesEffect.h"
 #include "light/effects/LavaLampEffect.h"
 #include "light/effects/NetworkReceiveEffect.h"
-#include "light/effects/AudioVolumeEffect.h"
 #include "light/effects/RadialSpectrumEffect.h"
 #include "light/effects/VuMetersEffect.h"
 #include "light/effects/BeatRipplesEffect.h"
@@ -211,7 +211,6 @@ static void registerModuleTypes() {
     // Effects — registered alphabetically by display name (the picker + docs also sort
     // alphabetically; keeping this list sorted makes the three orders agree at a glance).
     mm::ModuleFactory::registerType<mm::AudioSpectrumEffect>("AudioSpectrumEffect", "light/effects.md#audiospectrum");
-    mm::ModuleFactory::registerType<mm::AudioVolumeEffect>("AudioVolumeEffect", "light/effects.md#audiovolume");
     mm::ModuleFactory::registerType<mm::RadialSpectrumEffect>("RadialSpectrumEffect", "light/effects.md#radialspectrum");
     mm::ModuleFactory::registerType<mm::VuMetersEffect>("VuMetersEffect", "light/effects.md#vumeters");
     mm::ModuleFactory::registerType<mm::BeatRipplesEffect>("BeatRipplesEffect", "light/effects.md#beatripples");
@@ -260,6 +259,7 @@ static void registerModuleTypes() {
     mm::ModuleFactory::registerType<mm::FireworksEffect>("FireworksEffect", "light/effects.md#fireworks");
     mm::ModuleFactory::registerType<mm::FishTankEffect>("FishTankEffect", "light/effects.md#fishtank");
     mm::ModuleFactory::registerType<mm::PacmanEffect>("PacmanEffect", "light/effects.md#pacman");
+    mm::ModuleFactory::registerType<mm::FixedPointEffect>("FixedPointEffect", "light/effects.md#fixedpoint");
     mm::ModuleFactory::registerType<mm::MovingHeadEffect>("MovingHeadEffect", "light/effects.md#movinghead");
     mm::ModuleFactory::registerType<mm::FlyingToastersEffect>("FlyingToastersEffect", "light/effects.md#flyingtoasters");
     mm::ModuleFactory::registerType<mm::SpaceInvadersEffect>("SpaceInvadersEffect", "light/effects.md#spaceinvaders");

@@ -1,6 +1,6 @@
 # Plan — MoonLive Stage 0: native-codegen load-bearing spike
 
-> Approved plan record (CLAUDE.md *Plan before implementing*). Implements the first, smallest step of [livescripts-analysis-top-down.md](../../backlog/livescripts-analysis-top-down.md) — its Stage 0 "load-bearing spike", split one notch finer so the single novel hardware risk is isolated and proven before any compiler front-end is written. S3-only, bare-minimum assembler, near-zero language.
+> Approved plan record (CLAUDE.md *Plan before implementing*). Implements the first, smallest step of [livescripts-analysis-top-down.md](../../../backlog/livescripts-analysis-top-down.md) — its Stage 0 "load-bearing spike", split one notch finer so the single novel hardware risk is isolated and proven before any compiler front-end is written. S3-only, bare-minimum assembler, near-zero language.
 
 ## Goal
 
@@ -30,7 +30,7 @@ This is "small in depth AND broad": depth = one statement; broad = the whole ver
 
 ## Architecture placement (respecting the boundaries)
 
-Per [§3.9](../../backlog/livescripts-analysis-top-down.md) (domain-neutral engine core, thin binding) and the **platform boundary** hard rule (ISA codegen lives only in `src/platform/<target>/`):
+Per [§3.9](../../../backlog/livescripts-analysis-top-down.md) (domain-neutral engine core, thin binding) and the **platform boundary** hard rule (ISA codegen lives only in `src/platform/<target>/`):
 
 ```
 src/platform/platform.h                     ← + allocExec/freeExec seam (declaration only)

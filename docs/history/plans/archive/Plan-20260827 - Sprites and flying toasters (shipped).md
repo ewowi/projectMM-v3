@@ -3,7 +3,7 @@
 Classic screensavers on a light wall (a Discord request): sprites, small movable bitmaps with
 transparency, and the first consumer, After Dark's flying toasters. The power-functions catalog
 anticipated this: compositing was deferred "until sprites arrive"
-([bottom-up](power-functions-analysis-bottom-up.md) § below-the-cut); this is the arrival.
+([bottom-up](../../../backlog/power-functions-analysis-bottom-up.md) § below-the-cut); this is the arrival.
 
 ## Division of labor (the design decision)
 

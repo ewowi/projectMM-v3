@@ -20,7 +20,7 @@
 
 ## Context
 
-Writing the ["Build your own MoonModules" guide](../../usecases/build-your-own-moonmodules.md) surfaced a naming concern (product-owner remark R4): the hook vocabulary a module author must learn isn't as friendly as it could be.
+Writing the ["Build your own MoonModules" guide](../../../usecases/build-your-own-moonmodules.md) surfaced a naming concern (product-owner remark R4): the hook vocabulary a module author must learn isn't as friendly as it could be.
 
 1. **`onBuildControls` vs `onBuildState` read almost identically** (both `onBuild…`) yet do very different things — declare UI controls vs build derived state/memory. The shared prefix *causes* the "wait, are these the same?" confusion the remark names.
 2. **`onBuildState` (acquire) and `teardown` (release) are opposites but don't read as a pair** — nothing in the names signals "these two are the build/unbuild halves."

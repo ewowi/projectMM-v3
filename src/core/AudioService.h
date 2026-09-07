@@ -23,7 +23,7 @@ namespace mm {
 /// are *recomputed* only when a full sample block has accumulated (a 512-sample
 /// block at 22 kHz takes ~23 ms, longer than one tick), so a tick that doesn't
 /// complete a block re-publishes the previous `AudioFrame` unchanged rather than
-/// re-analysing. `AudioVolumeEffect` and `AudioSpectrumEffect` are the consumers,
+/// re-analyzing. `AudioSpectrumEffect` and the other audio effects are the consumers,
 /// reaching the live frame through the static `latestFrame()`.
 ///
 /// **Named for what it does**: audio acquisition plus analysis, not for one
