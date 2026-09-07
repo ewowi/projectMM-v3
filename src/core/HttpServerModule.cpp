@@ -213,7 +213,10 @@ void HttpServerModule::handleConnection(platform::TcpConnection& conn) {
                 // A MoonBase image is ~750 KB and streams the same way. Omitted at first, and the
                 // bench caught it: the 413 fires before the handler, so the route answered "body
                 // too large" for every image, valid or not.
-                std::strncmp(req, "POST /api/firmware/moonbase-update", 34) == 0;
+                // The trailing space matters: without it this prefix also matches
+                // `moonbase-update-url`, whose body is a small JSON object that must be read
+                // WHOLE. Treating it as streaming truncates it to the prefix buffer.
+                std::strncmp(req, "POST /api/firmware/moonbase-update ", 35) == 0;
             if (bodyNeeded > static_cast<int>(sizeof(buf) - 1)) {
                 if (!isStreamingRoute) {
                     sendResponse(conn, 413, "application/json",

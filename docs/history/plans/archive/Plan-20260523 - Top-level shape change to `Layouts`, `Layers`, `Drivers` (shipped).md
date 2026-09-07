@@ -184,12 +184,12 @@ Wait — that adds noise. Let me reconsider:
 
 ### Spec updates
 
-- **[docs/moonmodules/light/Layer.md](docs/moonmodules/light/Layer.md)** — update intro to "renders into a buffer sized by either the full Layouts extent or a carved region (start/end controls)." Document the new `setLayouts` method.
-- **[docs/moonmodules/light/Layouts.md](docs/moonmodules/light/Layouts.md)** — rename from `LayoutGroup.md`; class is `Layouts`. Body mostly unchanged (still describes the index-stitching).
-- **[docs/moonmodules/light/Layers.md](docs/moonmodules/light/Layers.md)** — NEW. Describes the container: holds N Layers, runs each in order in `loop()`, future home of the composed-buffer logic. Single-line forward-reference to the composition follow-up.
-- **[docs/moonmodules/light/drivers/Drivers.md](docs/moonmodules/light/drivers/Drivers.md)** — rename from `DriverGroup.md`; class is `Drivers`.
+- **[docs/moonmodules/light/Layer.md](../../../moonmodules/light/moxygen/Layer.md)** — update intro to "renders into a buffer sized by either the full Layouts extent or a carved region (start/end controls)." Document the new `setLayouts` method.
+- **[docs/moonmodules/light/Layouts.md](../../../moonmodules/light/moxygen/Layouts.md)** — rename from `LayoutGroup.md`; class is `Layouts`. Body mostly unchanged (still describes the index-stitching).
+- **[docs/moonmodules/light/Layers.md](../../../moonmodules/light/moxygen/Layers.md)** — NEW. Describes the container: holds N Layers, runs each in order in `loop()`, future home of the composed-buffer logic. Single-line forward-reference to the composition follow-up.
+- **[docs/moonmodules/light/drivers/Drivers.md](../../../moonmodules/light/moxygen/Drivers.md)** — rename from `DriverGroup.md`; class is `Drivers`.
 - **[docs/architecture-light.md](docs/architecture-light.md)** — update the pipeline diagram and any prose that names `LayoutGroup`/`DriverGroup`/singular `Layer`. The "UI integration (light domain)" tree shape gets `Layouts → Layers → Drivers` at the top level.
-- **[docs/moonmodules/light/EffectBase.md](docs/moonmodules/light/EffectBase.md)** — passing reference: parent is still `Layer`, no change.
+- **[docs/moonmodules/light/EffectBase.md](../../../moonmodules/light/moxygen/EffectBase.md)** — passing reference: parent is still `Layer`, no change.
 - **[docs/plan.md](docs/plan.md)** — add a `Multi-Layer composition (pending)` entry covering (a) compose, (b) per-Layer start/end carving activation.
 - **[README.md](README.md)** — scan for module type names; update if any examples use `LayoutGroup`/`DriverGroup`.
 
@@ -218,7 +218,7 @@ Wait — that adds noise. Let me reconsider:
 4. **Add `class Layers`** in [src/light/Layers.h](src/light/Layers.h). Add `setLayouts()` to `Layer`. main.cpp creates `Layers` containing one `Layer`. Run all tests; live-verify with a desktop run that the pipeline still produces frames.
 5. **Add `start/end` controls to `Layer`** — uint16 (or int16 if available) with sensible bounds. Default = whole layout. `rebuildLUT()` honours them when not at default. Update `test_layer*.cpp` and add a test asserting "Layer with default start/end matches old Layer behaviour byte-for-byte."
 6. **UI emoji pick** for `ModuleRole::Layer` — ask the product owner. Add to `ROLE_EMOJI` map in [src/ui/app.js](src/ui/app.js).
-7. **Update specs** ([Layer.md](docs/moonmodules/light/Layer.md), new [Layouts.md](docs/moonmodules/light/Layouts.md), new [Layers.md](docs/moonmodules/light/Layers.md), new [Drivers.md](docs/moonmodules/light/drivers/Drivers.md), [architecture-light.md](docs/architecture-light.md), [plan.md](docs/plan.md), [README.md](README.md) if needed). Run [check_specs.py](moondeck/check/check_specs.py).
+7. **Update specs** ([Layer.md](../../../moonmodules/light/moxygen/Layer.md), new [Layouts.md](../../../moonmodules/light/moxygen/Layouts.md), new [Layers.md](../../../moonmodules/light/moxygen/Layers.md), new [Drivers.md](../../../moonmodules/light/moxygen/Drivers.md), [architecture-light.md](docs/architecture-light.md), [plan.md](docs/plan.md), [README.md](README.md) if needed). Run [check_specs.py](moondeck/check/check_specs.py).
 8. **Migration**: FilesystemModule deletes `.config/LayoutGroup.json` and `.config/DriverGroup.json` if present, logs a warning.
 9. **All pre-commit gates 1–6** (build, ctest, scenarios, platform boundary, specs, ESP32). Reviewer agent (gate 7) after.
 

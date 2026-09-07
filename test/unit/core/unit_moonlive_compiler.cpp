@@ -215,6 +215,39 @@ TEST_CASE("passing an argument costs about what writing a member costs") {
 
 // --- else if, and the for's comparisons ---------------------------------------------------------
 
+TEST_CASE("a byte parameter wraps at 255, the way a byte local does") {
+    // A parameter is a local, so it has to behave like one. Handed 300 it kept 300, while the same
+    // value assigned to a byte local inside the body narrowed to 44: one type, two behaviors,
+    // depending only on how the value arrived.
+    moonlive::MoonLive eng;
+    REQUIRE(eng.compile("class T {\n"
+                        "  void paint(byte v) { setRGB(0, v, 0, 0); }\n"
+                        "  void tick() { paint(300); }\n"
+                        "}\n", kTable, kSys));
+    std::vector<uint8_t> buf(3, 0);
+    eng.run(buf.data(), 1, 3, 0, "tick");
+    CHECK(buf[0] == 44);            // 300 & 0xFF, as a byte local would hold
+}
+
+TEST_CASE("a function declaring more parameters than the block holds is refused") {
+    // The arena block carries kMaxScriptArgs values, and the CALL site clamps to it. The prologue
+    // did not: it emitted one LoadCtrl32 per DECLARED parameter, so a fifth read past the end of
+    // the arena allocation and a later one wrote there. Script text is user-supplied on a
+    // network-reachable device, so the declaration has to be refused where it is written.
+    moonlive::MoonLive five;
+    CHECK_FALSE(five.compile("class T {\n"
+                             "  void helper(int a, int b, int c, int d, int e) { setRGB(a, 1, 0, 0); }\n"
+                             "  void tick() { helper(0, 0, 0, 0, 0); }\n"
+                             "}\n", kTable, kSys));
+
+    // Exactly the maximum still compiles: the bound is the block's size, not one below it.
+    moonlive::MoonLive four;
+    CHECK(four.compile("class T {\n"
+                       "  void helper(int a, int b, int c, int d) { setRGB(a, b, c, d); }\n"
+                       "  void tick() { helper(0, 1, 2, 3); }\n"
+                       "}\n", kTable, kSys));
+}
+
 TEST_CASE("a parameter name is checked the way a local is") {
     // A parameter IS a local, so a name refused inside the body must be refused in the list.
     // Without these checks a parameter could shadow a builtin (making it unreachable for the whole
@@ -238,24 +271,31 @@ TEST_CASE("a parameter name is checked the way a local is") {
 }
 
 TEST_CASE("a chain of else if arms picks exactly one") {
-    // The shape a MODE control needs. Without `else if` a chain had to be written as separate ifs
-    // re-testing the same variable, which costs a comparison per arm and, with a loop in each,
-    // exhausted the per-script label budget.
-    moonlive::MoonLive eng;
-    REQUIRE(eng.compile("class T {\n"
-                        "  byte mode = 0;\n"
-                        "  void defineControls() { addControl(\"mode\", mode, 0, 3); }\n"
-                        "  void tick() {\n"
-                        "    if (mode == 0) { setRGB(0, 10, 0, 0); }\n"
-                        "    else if (mode == 1) { setRGB(0, 20, 0, 0); }\n"
-                        "    else if (mode == 2) { setRGB(0, 30, 0, 0); }\n"
-                        "    else { setRGB(0, 40, 0, 0); }\n"
-                        "  }\n"
-                        "}\n", kTable, kSys));
-    REQUIRE(eng.ok());
-    std::vector<uint8_t> buf(3, 0);
-    eng.run(buf.data(), 1, 3, 0, "tick");
-    CHECK(buf[0] == 10);          // mode defaults to 0: the FIRST arm, and only that one
+    // The shape a MODE control needs, and every arm is exercised: a chain that fell through would
+    // still paint the right value for the first case while painting a later arm's for the rest.
+    // The selector is a plain local per compile rather than a control, so the arms are chosen the
+    // same way at runtime without needing a control-capable fixture table.
+    for (const auto& [mode, want] : std::vector<std::pair<int, uint8_t>>{
+             {0, 10}, {1, 20}, {2, 30}, {7, 40}}) {
+        CAPTURE(mode);
+        char src[384];
+        std::snprintf(src, sizeof(src),
+                      "class T {\n"
+                      "  void tick() {\n"
+                      "    int mode = %d;\n"
+                      "    if (mode == 0) { setRGB(0, 10, 0, 0); }\n"
+                      "    else if (mode == 1) { setRGB(0, 20, 0, 0); }\n"
+                      "    else if (mode == 2) { setRGB(0, 30, 0, 0); }\n"
+                      "    else { setRGB(0, 40, 0, 0); }\n"
+                      "  }\n"
+                      "}\n", mode);
+        moonlive::MoonLive eng;
+        REQUIRE(eng.compile(src, kTable, kSys));
+        REQUIRE(eng.ok());
+        std::vector<uint8_t> buf(3, 0);
+        eng.run(buf.data(), 1, 3, 0, "tick");
+        CHECK(buf[0] == want);    // exactly the arm that matches, and nothing after it
+    }
 }
 
 TEST_CASE("a for counts up to its bound with < and through it with <=") {

@@ -137,7 +137,7 @@ this is removing a distinction the storage layer never made — not introducing 
 still decides is which slots it WRITES each frame; reading is uniform.
 
 This is a breaking change for any script using a modifier's `x`/`y`/`z`, so it needs its
-[MIGRATING.md](../../MIGRATING.md) entry and a sweep of the shipped `moonlive/` scripts.
+[MIGRATING.md](../../../MIGRATING.md) entry and a sweep of the shipped `moonlive/` scripts.
 
 ### Clean first, with speed decisions made deliberately
 
@@ -435,7 +435,7 @@ window-overflow handler spills a frame's a4..a7 into the frame's OWN top 32 byte
 reserved 16, so the parked arena pointer of step 3b sat in hardware-owned memory and any interrupt
 during a host call destroyed it. Frame LAYOUT, not register choice; spatial, not temporal; and
 invisible to every encoding check because each instruction was correct. See
-[lessons § the register-window frame bug](../lessons.md#lessons-from-the-moonlive-on-xtensa-branch-the-register-window-frame-bug).
+[lessons § the register-window frame bug](../../lessons.md#lessons-from-the-moonlive-on-xtensa-branch-the-register-window-frame-bug).
 All four boards (S3, classic, P4, S31) now run scripted layouts and effects.
 
 ## Status: CLOSED

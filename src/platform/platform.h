@@ -793,6 +793,10 @@ bool otaMoonBaseSize(uint32_t* used, uint32_t* total);
 // differences that matter. It VETS the first chunk (magic, chip id, and that the image really is
 // MoonBase) before erasing anything, so a wrong URL costs nothing. And it does NOT reboot: the
 // running app is untouched, and the new image is simply what the device falls back to next.
+//
+// SYNCHRONOUS, and it blocks the caller for the whole erase and write: no-reboot does not mean
+// non-blocking. Called from an HTTP handler on the render task, so the lights hold still for the
+// duration, the same as the app's own upload path. False on desktop, which has no factory slot.
 bool otaWriteMoonBase(FsWriteSrc src, void* user, size_t contentLen,
                       char* statusBuf, size_t statusBufLen, uint32_t* bytesReadOut);
 // The same install from a URL rather than an upload: the device fetches the image itself, which

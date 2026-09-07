@@ -20,7 +20,6 @@
 namespace mm {
 
 /// Effect: sub-pixel shapes, drawn between pixels so small panels move smoothly.
-/// @card FixedPointEffect.gif
 class FixedPointEffect : public EffectBase {
 public:
     // 💫 for the origin (this came from MoonLight), 🖌️ because every shape is computed from a

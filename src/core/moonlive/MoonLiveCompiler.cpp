@@ -1787,7 +1787,15 @@ struct Parser {
                 fail("a member of that name is declared"); return false;
             }
             if (localCount >= kMaxLocals) { fail("too many locals"); return false; }
-            if (params >= kMaxCallArgs) { fail("too many parameters"); return false; }
+            // Bounded by the ARENA BLOCK, not by kMaxCallArgs. The block carries kMaxScriptArgs
+            // values and the call site clamps to it, but the prologue emits one LoadCtrl32 per
+            // DECLARED parameter: a fifth read past the end of the arena allocation, and a later
+            // one wrote there. Script text is user-supplied on a network-reachable device, so the
+            // declaration is refused where it is written rather than clamped silently.
+            if (params >= moonlive::kMaxScriptArgs) {
+                fail("a function takes at most 4 parameters");
+                return false;
+            }
             locals[localCount++] = {lex.identBeg, lex.identLen, slotHighWater, t};
             slotHighWater++;
             if (slotHighWater > slotsUsed) slotsUsed = slotHighWater;
@@ -1901,6 +1909,15 @@ struct Parser {
             for (uint8_t a = 0; a < params; a++) {
                 const VReg v = alloc();
                 emit({IrOp::LoadCtrl32, v, 0,0,0,0, scriptArgOffset(a), nullptr, {}});
+                // NARROWED to what the parameter was declared as, the same way an assignment to a
+                // local is (parseLocalDecl, and the assignment path). A `byte` parameter handed
+                // 300 kept 300, so the same value behaved differently depending on whether it
+                // arrived as an argument or was assigned inside the body.
+                //
+                // Here rather than at the call site: the callee knows the declared types (they are
+                // its own locals 0..N-1), while the caller would need them carried into FnMark,
+                // and one conversion in the prologue serves every call site.
+                narrowToType(v, locals[a].type);
                 emit({IrOp::Spill, 0, v, 0,0,0, a, nullptr, {}});
                 freeTemp(v);
             }

@@ -2,7 +2,7 @@
 
 ## Context
 
-Today `ModuleRole::Peripheral` conflates two categories that both parent under **System**: the genuinely **user-added capability bridges** (Audio, IR — optional, add/delete), and **fixed things that borrow the role only to render a delete button** (TasksModule was given `Peripheral`+delete for exactly that; I2cScan and FileManager carry it while being always-there). Network's own children (MQTT, Devices) are a third, separate thing — always-there infra, wired-by-code, never user-added. The design note [docs/backlog/system-modules.md](../../backlog/system-modules.md) settles the split:
+Today `ModuleRole::Peripheral` conflates two categories that both parent under **System**: the genuinely **user-added capability bridges** (Audio, IR — optional, add/delete), and **fixed things that borrow the role only to render a delete button** (TasksModule was given `Peripheral`+delete for exactly that; I2cScan and FileManager carry it while being always-there). Network's own children (MQTT, Devices) are a third, separate thing — always-there infra, wired-by-code, never user-added. The design note [docs/backlog/system-modules.md](../../../backlog/system-modules.md) settles the split:
 
 - **System Modules** — fixed, wired-by-code, no add/delete: System's vitals + the fixed inspection modules (Tasks, I2cScan; later Memory, Pins) + always-there infra (Network, Firmware, Improv).
 - **Service Modules** (a new top-level **Services** container) — user-added, add/delete/replace, `ModuleRole::Service`: Audio, IR. (I2cScan → a fixed System Module — it inspects this-device hardware; MQTT/Improv/Devices stay code-wired — see §3.)

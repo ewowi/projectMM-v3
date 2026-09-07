@@ -610,6 +610,16 @@ bool installFromSocketLocked(int sock, const char* prefix, size_t prefixLen, siz
     // Same refusal as the URL path, from the bytes already in hand. The offsets and the rule come
     // from core/FirmwareImage.h, the same header the app's install path uses: hand-written
     // offsets here would be a second copy of the image format to keep in step.
+    //
+    // Refused when the prefix is too SHORT to identify, rather than passed. identify() on a short
+    // buffer reports "no description" for an image that has one, so a guard that only rejects a
+    // described MoonBase image would wave it through whenever the headers arrived alone. Every
+    // real image carries its descriptor in the first 128 bytes.
+    if (prefixLen < mm::firmware::kIdentifyBytes) {
+        esp_ota_abort(handle);
+        std::snprintf(status_, sizeof(status_), "error: could not identify the image");
+        return false;
+    }
     const auto incomingUp = mm::firmware::identify(
         reinterpret_cast<const uint8_t*>(prefix), prefixLen);
     if (incomingUp.described &&

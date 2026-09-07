@@ -4,7 +4,7 @@
 
 A **74HCT595 shift-register expander board** turns each physical data GPIO into **8 outputs**. The PO owns two S3-N16R8-driven panels — **15×256** (3,840 lights) and **48×256** (12,288 lights) — not yet wired. Goal: drive them from the drivers we already have, not a new driver class.
 
-The feasibility research is [`docs/history/shift-register-driver-analysis.md`](../shift-register-driver-analysis.md). The two facts that shape this plan:
+The feasibility research is [`docs/history/shift-register-driver-analysis.md`](../../shift-register-driver-analysis.md). The two facts that shape this plan:
 
 1. **The ×8 fan-out costs 8× the DMA frame** (~145 KB for *both* targets — extra strands ride the bus width and are free; the ×8 rides the serial shift and is not). Confirmed from hpwit's sizing expressions and his 8.00× clock ratio.
 2. **The 8× bus clock is granted by `esp_lcd`** — bench-confirmed 2026-07-14 on S3 **and** P4: `request 20000000 Hz -> GRANTED (prescale 4 -> granted 20000000 Hz)`.

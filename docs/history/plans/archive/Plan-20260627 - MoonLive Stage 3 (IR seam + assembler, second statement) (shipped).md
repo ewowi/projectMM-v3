@@ -1,6 +1,6 @@
 # Plan — MoonLive Stage 3: the IR seam + a tiny assembler (second statement)
 
-> Approved plan record (CLAUDE.md *Plan before implementing*). The next rung of MoonLive after the shipped 1a→1b→2 + P4 spike: add the **second statement kind** to the language, which forces the **typed IR** and a **per-ISA assembler** to earn their place (the current AST→emitFill shortcut only works for one fixed routine). Builds on [livescripts-analysis-top-down.md](../../backlog/livescripts-analysis-top-down.md) §3.2 (IR seam), §4 (bounds-check at the IR), §3.4 (host built-ins).
+> Approved plan record (CLAUDE.md *Plan before implementing*). The next rung of MoonLive after the shipped 1a→1b→2 + P4 spike: add the **second statement kind** to the language, which forces the **typed IR** and a **per-ISA assembler** to earn their place (the current AST→emitFill shortcut only works for one fixed routine). Builds on [livescripts-analysis-top-down.md](../../../backlog/livescripts-analysis-top-down.md) §3.2 (IR seam), §4 (bounds-check at the IR), §3.4 (host built-ins).
 
 ## Goal
 

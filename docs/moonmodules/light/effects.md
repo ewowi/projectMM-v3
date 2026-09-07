@@ -341,7 +341,7 @@ Origin: projectMM original; inspired by After Dark's Flying Toasters (Berkeley S
 
 <a id="fixedpoint"></a>
 
-### FixedPoint 🕐🆕 · 2D
+### FixedPoint 💫🖌️ · 2D
 
 Shapes placed BETWEEN pixels rather than on them. A clock hand drawn on whole pixels jumps a full
 pixel at a time and reads as broken; the same hand placed at a fractional position and antialiased
@@ -381,6 +381,10 @@ the effect computes no coverage itself. Concept and the original fixed-point can
 one control; all eleven are ported here.
 
 Origin: MoonLight (Sutaburosu)
+
+Detail: [technical](moxygen/FixedPointEffect.md)
+
+[Tests](../../tests/unit-tests.md#fixedpointeffect)
 
 <a id="movinghead"></a>
 

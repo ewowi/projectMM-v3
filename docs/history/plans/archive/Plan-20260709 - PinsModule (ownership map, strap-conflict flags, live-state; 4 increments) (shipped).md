@@ -1,6 +1,6 @@
 # Plan — PinsModule: the GPIO pin map, four increments (shipped)
 
-Consolidated record of the four-increment Pins effort (per CLAUDE.md *Plan before implementing* — a multi-phase effort's per-phase plans may be merged into one `(shipped)` record once the whole effort lands, preserving each phase's design-intent arc). All four shipped 2026-07-09. The forward-looking source is the [top-down study](../../backlog/pins-analysis-top-down.md), §8 of which defines the increments.
+Consolidated record of the four-increment Pins effort (per CLAUDE.md *Plan before implementing* — a multi-phase effort's per-phase plans may be merged into one `(shipped)` record once the whole effort lands, preserving each phase's design-intent arc). All four shipped 2026-07-09. The forward-looking source is the [top-down study](../../../backlog/pins-analysis-top-down.md), §8 of which defines the increments.
 
 ## Why (the problem the whole effort solves)
 
@@ -26,4 +26,4 @@ Adds the **second axis** — *what is GPIO N doing right now.* Per §6 this is *
 
 ## The through-line (why these four cohere)
 
-Each increment is read-only and additive on the last, and the recurring discipline is the **UI-sidestep rule**: every richer-UI need was met by a *generic* list affordance (the `severity`→color convention in #2, reused unchanged by #3; the scalar-fields path needing nothing in #4), never a pins-specific control. The map surfaces ownership (#1), safety (#2), conflicts (#3), and live electrical state (#4) — and at no point becomes an allocation subsystem or a policy engine, exactly the scope guard the top-down study draws. Later phases (reject-on-add on the installer path, the `pinConflicts()` validator authority, output-suppression, the board-diagram view, ADC/continuity live-state) remain in the [top-down study](../../backlog/pins-analysis-top-down.md) as the forward scope.
+Each increment is read-only and additive on the last, and the recurring discipline is the **UI-sidestep rule**: every richer-UI need was met by a *generic* list affordance (the `severity`→color convention in #2, reused unchanged by #3; the scalar-fields path needing nothing in #4), never a pins-specific control. The map surfaces ownership (#1), safety (#2), conflicts (#3), and live electrical state (#4) — and at no point becomes an allocation subsystem or a policy engine, exactly the scope guard the top-down study draws. Later phases (reject-on-add on the installer path, the `pinConflicts()` validator authority, output-suppression, the board-diagram view, ADC/continuity live-state) remain in the [top-down study](../../../backlog/pins-analysis-top-down.md) as the forward scope.

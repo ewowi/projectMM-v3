@@ -3,7 +3,7 @@
 ## Context
 
 The PO wants to watch effects pixel-exact (1:1, no scaling) on a TV, up to 4K transport. Spec:
-[docs/backlog/hls-driver-spec.md](../../backlog/hls-driver-spec.md). Decisions already made with
+`docs/backlog/hls-driver-spec.md` (deleted when the driver shipped, per the backlog's drain rule). Decisions already made with
 the PO: pipe raw frames to a spawned **ffmpeg** (runtime dependency like Npcap/NDI, never
 vendored; one implementation for every desktop OS + Pi), H.264 + HLS served by our own HTTP
 server, 2-5 s live-tuned latency, ESP32 out of scope. Rides along: GridLayout `width`/`height`

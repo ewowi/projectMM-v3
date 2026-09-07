@@ -1,6 +1,6 @@
 # Plan — Stage 3 E_MoonModules batch (GameOfLife + GEQ3D + PaintBrush)
 
-The first effect-migration batch of [MoonLight migration Stage 3](./Plan-20260630%20-%20MoonLight%20migration%20(multi-stage).md): port all three effects in MoonLight's `Nodes/Effects/E_MoonModules.h` (MoonModules-authored set), built fresh on the Stage-1 primitives (palette, `math8`, `noise`, `draw`). One commit (PO decision). Each effect: study behaviour → reimplement against EffectBase → unit + scenario test → `effects.md` row.
+The first effect-migration batch of [MoonLight migration Stage 3](../Plan-20260630%20-%20MoonLight%20migration%20%28multi-stage%29.md): port all three effects in MoonLight's `Nodes/Effects/E_MoonModules.h` (MoonModules-authored set), built fresh on the Stage-1 primitives (palette, `math8`, `noise`, `draw`). One commit (PO decision). Each effect: study behaviour → reimplement against EffectBase → unit + scenario test → `effects.md` row.
 
 **Method (CLAUDE.md):** study the MoonLight source for *behaviour* (controls, algorithm, state), then write our own code on our architecture — never trace/copy. FastLED/MoonLight credited as prior art in each `tags()` + the effect's header + the `effects.md` row.
 

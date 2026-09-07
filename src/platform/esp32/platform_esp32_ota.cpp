@@ -55,7 +55,22 @@ struct OtaTaskParams {
     uint32_t* bytesTotalOut;  // image size; 0 until esp_https_ota reports it
 };
 
-// Write to the status buffer with bounded length. snprintf truncates safely.
+// Write to a status buffer with bounded length. snprintf truncates safely.
+//
+// ONE writer for the file. Three call sites had grown an identical `setStatus` lambda of their
+// own, which also put the format string behind a variadic template: correct, since every call
+// passes a literal, but not PROVABLE, and CodeQL flagged it (cpp/non-constant-format). A plain
+// varargs function takes the printf format attribute, so the compiler now checks each format
+// against its arguments and a non-literal one is a build error rather than a scanner note.
+__attribute__((format(printf, 3, 4)))
+void statusf(char* buf, size_t len, const char* fmt, ...) {
+    if (!buf || len == 0) return;
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buf, len, fmt, args);
+    va_end(args);
+}
+
 void otaSetStatus(OtaTaskParams* p, const char* fmt, ...) {
     if (!p->statusBuf || p->statusBufLen == 0) return;
     va_list args;
@@ -238,9 +253,8 @@ bool http_fetch_to_ota(const char* url,
 bool otaWriteStream(FsWriteSrc src, void* user, size_t contentLen,
                     char* statusBuf, size_t statusBufLen, uint32_t* bytesReadOut) {
     if (!src || !statusBuf || statusBufLen == 0 || !bytesReadOut) return false;
-    auto setStatus = [&](const char* fmt, auto... a) {
-        std::snprintf(statusBuf, statusBufLen, fmt, a...);
-    };
+    // Names the buffer once; the formatting itself is statusf's, which the compiler format-checks.
+    auto setStatus = [&](const char* fmt, auto... a) { statusf(statusBuf, statusBufLen, fmt, a...); };
 
     const esp_partition_t* part = esp_ota_get_next_update_partition(nullptr);
     if (!part) { setStatus("error: no OTA partition"); return false; }
@@ -305,13 +319,32 @@ bool otaWriteStream(FsWriteSrc src, void* user, size_t contentLen,
             return false;
         }
         if (n == 0) break;   // clean EOF — whole body delivered
-        // NOT A MOONBASE IMAGE, checked on the first chunk. The mirror of the MoonBase install's
-        // check: writing MoonBase into the APP slot leaves both partitions holding it, and every
-        // route out then resolves to the partition being run from, so the device answers and
-        // cannot be recovered without a cable.
+        // NOT A MOONBASE IMAGE. The mirror of the MoonBase install's check: writing MoonBase into
+        // the APP slot leaves both partitions holding it, and every route out then resolves to the
+        // partition being run from, so the device answers and cannot be recovered without a cable.
+        //
+        // Decided on ENOUGH BYTES, not on the first chunk. A producer may deliver fewer than the
+        // descriptor needs (a slow socket hands back what it has), and identifying a short prefix
+        // reports "no description" for an image that has one: the guard would pass and the wrong
+        // image would land. So hold the prefix back until there is enough to read.
         if (!vetted) {
-            vetted = true;
+            if (written + n < firmware::kIdentifyBytes) {
+                // Not enough yet, and nothing written: keep accumulating in the OTA partition is
+                // not an option (a rejected image must leave no bytes), so refuse a body that
+                // ends before it can be identified. Any real image is far larger.
+                if (contentLen && contentLen < firmware::kIdentifyBytes) {
+                    setStatus("error: too short to be a firmware image");
+                    esp_ota_abort(handle);
+                    return false;
+                }
+            }
             const auto info = firmware::identify(buf, n);
+            if (info.valid && !info.described && n < firmware::kIdentifyBytes) {
+                setStatus("error: could not identify the image");
+                esp_ota_abort(handle);
+                return false;
+            }
+            vetted = true;
             if (info.described &&
                 std::strcmp(info.project, "projectMM-moonbase") == 0) {
                 setStatus("error: that is a MoonBase image, not an app");
@@ -379,9 +412,8 @@ bool moonBaseImageRejected(const uint8_t* buf, size_t n, char* why, size_t whyLe
 bool otaWriteMoonBase(FsWriteSrc src, void* user, size_t contentLen,
                       char* statusBuf, size_t statusBufLen, uint32_t* bytesReadOut) {
     if (!src || !statusBuf || statusBufLen == 0 || !bytesReadOut) return false;
-    auto setStatus = [&](const char* fmt, auto... a) {
-        std::snprintf(statusBuf, statusBufLen, fmt, a...);
-    };
+    // Names the buffer once; the formatting itself is statusf's, which the compiler format-checks.
+    auto setStatus = [&](const char* fmt, auto... a) { statusf(statusBuf, statusBufLen, fmt, a...); };
 
     const esp_partition_t* part = moonBasePartition();
     if (!part) { setStatus("error: no MoonBase on this device"); return false; }
@@ -510,9 +542,8 @@ size_t urlPullChunk(char* out, size_t cap, void* user, bool* abort) {
 
 bool moonBaseFetchUrlSync(const char* url, char* statusBuf, size_t statusBufLen,
                           uint32_t* bytesReadOut, uint32_t* bytesTotalOut) {
-    auto setStatus = [&](const char* fmt, auto... a) {
-        std::snprintf(statusBuf, statusBufLen, fmt, a...);
-    };
+    // Names the buffer once; the formatting itself is statusf's, which the compiler format-checks.
+    auto setStatus = [&](const char* fmt, auto... a) { statusf(statusBuf, statusBufLen, fmt, a...); };
     esp_http_client_config_t cfg = {};
     cfg.url = url;
     // Same TLS and redirect handling the app's OTA fetch needs, and for the same reasons: a

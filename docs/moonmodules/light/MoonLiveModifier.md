@@ -37,7 +37,7 @@ setXYZ((width - 1 - xPos) * 2, yPos, zPos);   // mirror, then stretch
 ### Seeing inside a script
 
 `print(v)` logs a value and returns it, so it wraps any part of an expression: `setXYZ(print(width - 1 - xPos), yPos, zPos)`.
-It is for debugging and comes back out again — [what print costs](https://github.com/MoonModules/projectMM/blob/main/moonlive/README.md#debugging-print).
+It is for debugging and comes back out again: [what print costs](https://github.com/MoonModules/projectMM/blob/main/moonlive/README.md#debugging-print).
 
 ## Limits
 

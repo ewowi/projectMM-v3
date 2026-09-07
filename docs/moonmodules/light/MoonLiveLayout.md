@@ -65,7 +65,7 @@ A script reads whatever it declares. `byte cols = 16;` is a member the script ow
 ### Seeing inside a script
 
 `print(v)` logs a value and returns it, so it wraps any part of an expression: `addLight(print(x), y, 0)`.
-It is for debugging and comes back out again — [what print costs](https://github.com/MoonModules/projectMM/blob/main/moonlive/README.md#debugging-print).
+It is for debugging and comes back out again: [what print costs](https://github.com/MoonModules/projectMM/blob/main/moonlive/README.md#debugging-print).
 
 ## How the count is known
 

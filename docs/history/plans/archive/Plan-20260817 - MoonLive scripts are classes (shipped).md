@@ -750,7 +750,7 @@ therefore needs a host test that proves the semantics and a bench run that prove
    The P4 is up and holds its scripts, but it panics with `Cache error` every few minutes while
    idle. Established as PRE-EXISTING rather than a regression: it runs the default module tree with
    no MoonLive module at all, and a firmware built from a clean `main` crashes identically. Recorded
-   in [backlog-core](../../backlog/backlog-core.md). A SEPARATE P4 boot loop found in the same
+   in [backlog-core](../../../backlog/backlog-core.md). A SEPARATE P4 boot loop found in the same
    session WAS this branch's regression and is fixed: the engine had grown to 1440 bytes held by
    value in every scripted module, which `registerType`'s stack probe could not absorb.
 
@@ -765,7 +765,7 @@ therefore needs a host test that proves the semantics and a bench run that prove
   the compiler.
 - **`while`, `break`, `continue`.** `for` and `if` cover what an effect does; the rest is language
   completeness rather than expressiveness, and each one costs a grammar rule and a test surface.
-- **Floating point.** The render path is integer by rule ([coding-standards](../../coding-standards.md)),
+- **Floating point.** The render path is integer by rule ([coding-standards](../../../coding-standards.md)),
   and the Xtensa classic has no FPU, so a float in a script would be a silent softfloat call per light.
 - **A scripted DRIVER as the fourth role.** It is the honest test of step 5's dispatch, but it needs
   the driver surface to be as settled as the other three are, and that is its own question.

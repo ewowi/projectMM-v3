@@ -193,10 +193,10 @@ Three small additions in `test/`:
 - [test/CMakeLists.txt](test/CMakeLists.txt) — register
 
 **Docs:**
-- [docs/moonmodules/core/SystemModule.md](docs/moonmodules/core/SystemModule.md)
-- [docs/moonmodules/core/HttpServerModule.md](docs/moonmodules/core/HttpServerModule.md)
-- [docs/moonmodules/core/MoonModule.md](docs/moonmodules/core/MoonModule.md)
-- [docs/testing.md](docs/testing.md)
+- [docs/moonmodules/core/SystemModule.md](../../../moonmodules/core/moxygen/SystemModule.md)
+- [docs/moonmodules/core/HttpServerModule.md](../../../moonmodules/core/moxygen/HttpServerModule.md)
+- [docs/moonmodules/core/MoonModule.md](../../../moonmodules/core/moxygen/MoonModule.md)
+- [docs/testing.md](../../../testing.md)
 - `git mv docs/moonmodules_draft/core/ui-spec.md docs/moonmodules/core/ui-spec.md`
 - [docs/plan.md](docs/plan.md) — remove step 12
 - [docs/history/plan-11.md](docs/history/plan-11.md) — new

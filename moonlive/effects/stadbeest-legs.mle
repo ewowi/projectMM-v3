@@ -1,4 +1,4 @@
-// StadBeestLegs: fluid crawling down ten legs, with a pulse that travels from the body outward.
+// StadBeestLegs: a crawl travelling down ten legs, each offset so the rig reads as walking.
 
 class StadBeestLegsEffect {
   byte hue = 100;
@@ -20,46 +20,29 @@ class StadBeestLegsEffect {
   }
 
   void tick() {
-    // A CREATURE'S GAIT, not a light show: each leg is offset in the cycle, so the pulses arrive
-    // in sequence down the row rather than all at once. That sequencing is what reads as walking.
     for (int leg = 0; leg < width; leg = leg + 1) {
       int phase = div(leg * spread, 4);
 
-      // With audio on, a leg's own frequency band drives it: the low bands are the near legs, the
-      // high ones the far legs, so bass moves the body and treble twitches the tips.
       int drive = 255;
       if (audioReactive == 1) {
         drive = audioBand(div(leg * 16, width)) + 40;
         if (drive > 255) { drive = 255; }
       }
 
-      // WHERE THE PULSE IS on this leg, travelling from the body (y=0) outward.
       int head = div(beat(bpm, t + phase) * height, 65536);
-
-      // The shimmer is sampled ONCE PER LEG, not per light. Per light it was a noise() call on
-      // every one of 1440 lights, which cost half the frame: 37 ms of a 75 ms budget, for a
-      // texture the eye reads as one slow glow along a tube anyway. Sampled per leg and tilted
-      // along y below, it looks the same and costs a tenth as much.
       int shimmer = div(noise(leg * 900, 0, t), 6);
 
       for (int y = 0; y < height; y = y + 1) {
-        // Distance BEHIND the pulse head, so the trail follows rather than leads: a pulse with a
-        // symmetric glow reads as a blob, one with a tail reads as motion in a direction.
         int behind = y - head;
         if (behind < 0) { behind = behind + height; }
 
         int bright = 0;
         if (behind < tail) { bright = 255 - div(behind * 255, tail); }
 
-        // A slow shimmer, so a leg between pulses is alive rather than dark: an unlit limb on a
-        // big installation looks broken, not resting. The per-leg value fades toward the tip, which
-        // is the gradient the per-light noise was really providing.
         bright = bright + shimmer - div(y * 12, height);
         if (bright > 255) { bright = 255; }
         bright = div(bright * drive, 256);
 
-        // Hue shifts along the leg, so the tips read a different color from the body: that
-        // gradient is what gives ten straight tubes the look of limbs.
         setPaletteColor(leg, y, hue + div(y * 40, height), bright);
       }
     }

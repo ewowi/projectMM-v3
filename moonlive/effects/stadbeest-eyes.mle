@@ -20,13 +20,9 @@ class StadBeestEyesEffect {
   }
 
   void tick() {
-    // WHERE THE EYE IS LOOKING. The gaze drifts on two oscillators at different rates, so it
-    // never repeats: an eye that swept a circle would read as a machine, not a creature.
     int gazeX = div((beatsin(bpm, t, 255) - 128) * wander, 400);
     int gazeY = div((beatsin(bpm + 3, t, 255) - 128) * wander, 400);
 
-    // A LOUD ROOM OPENS THE PUPIL, which is what a startled animal does. Silence closes it to the
-    // slit, so the eye reads as calm until something happens.
     int open = pupil;
     if (audioReactive == 1) { open = pupil + div(audioLevel() * 90, 256); }
 
@@ -39,16 +35,11 @@ class StadBeestEyesEffect {
         int dy = y - cy;
         int r = polarR(dx, dy);
 
-        // THE SLIT. A frog's pupil is a horizontal bar, not a disc: it is the single feature that
-        // makes an eye read as amphibian rather than human. Distance is measured with y weighted
-        // heavily, which squashes the circle into that bar.
         int slit = polarR(dx, dy * 5);
 
         if (slit < div(open, 16)) {
           setRGB(y * width + x, 0, 0, 0);           // the pupil: genuinely black
         } else {
-          // THE IRIS: bright at the pupil's edge, falling off outward, with fine radial fibres.
-          // The fibres are what make it look like an eye instead of a gradient.
           int a = polarA(dx, dy);
           int fibre = div(sin(a * 12) + 32768, 512);
           int bright = 255 - div(r * 9, 16) + div(fibre, 3);

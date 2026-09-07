@@ -71,7 +71,7 @@ Remove the `g`/`+` gap syntax entirely, as its own commit/step so the diff reads
 - **[ParallelLedDriver.h](src/light/drivers/ParallelLedDriver.h):** remove `laneGaps_`, the gap semantics of `laneWire_`, the gap branch of `laneRowLit`, `laneNextBoundary`'s gap logic, the `laneGapCount`/`laneRowLitForTest`/`laneWire` test accessors, the `assignCounts(..., laneGaps_)` argument, the wire-length gap accumulation, and the `if (laneGaps_[i].n) return false` in `uniformLaneCounts`. Restore `laneRowLit` to the pre-gap `row < laneCounts_` test.
 - **[RmtLedDriver.h](src/light/drivers/RmtLedDriver.h) / [NetworkSendDriver.h](src/light/drivers/NetworkSendDriver.h):** confirm the `assignCounts` call sites compile after the trailing param drops.
 - **Tests:** remove the gap TEST_CASEs from [unit_RmtLedDriver_pins.cpp](test/unit/light/unit_RmtLedDriver_pins.cpp) and [unit_MultiPinLedDriver.cpp](test/unit/light/unit_MultiPinLedDriver.cpp).
-- **Docs:** revert the `ledsPerPin` gap paragraph in [drivers.md](docs/moonmodules/light/drivers.md) and the backlog item edit in [backlog-light.md](docs/backlog/backlog-light.md).
+- **Docs:** revert the `ledsPerPin` gap paragraph in [drivers.md](../../../moonmodules/light/drivers.md) and the backlog item edit in [backlog-light.md](../../../backlog/backlog-light.md).
 
 ## Tests (pin behavior)
 

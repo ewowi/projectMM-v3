@@ -1,9 +1,9 @@
 {
-  "commit": "73e52cb9",
+  "commit": "52e03cbe",
   "flash": {
     "esp32s3-n16r8": 2100032,
     "desktop": 1909016,
-    "esp32": 2056928,
+    "esp32": 2059664,
     "esp32p4rev1-eth": 1979232,
     "esp32p4rev1-eth-wifi": 2019392,
     "esp32s3-n8r8": 2087168,
@@ -17,19 +17,19 @@
     "esp32-pico": 2071584
   },
   "measured": {
-    "esp32p4rev1-eth": "2026-09-07",
+    "esp32p4rev1-eth": "2026-09-08",
     "esp32s31": "2026-09-06",
-    "esp32": "2026-09-07",
+    "esp32": "2026-09-08",
     "esp32-pico": "2026-09-06",
-    "esp32s3-n16r8": "2026-09-07",
-    "desktop": "2026-09-07",
-    "esp32s3-n8r8": "2026-09-07",
-    "esp32s3-zero": "2026-09-07"
+    "esp32s3-n16r8": "2026-09-08",
+    "desktop": "2026-09-08",
+    "esp32s3-n8r8": "2026-09-08",
+    "esp32s3-zero": "2026-09-08"
   },
   "perf": {
     "desktop": {
-      "tick_us": 629,
-      "fps": 1589,
+      "tick_us": 140,
+      "fps": 7142,
       "scenario_p50": {
         "Layer_base_pipeline": {
           "p50": 71,
@@ -409,9 +409,9 @@
       "MoonLiveEffect_livescript": {
         "desktop-macos": {
           "p50": 6,
-          "p95": 7,
-          "n": 15,
-          "last": "2026-09-07"
+          "p95": 8,
+          "n": 16,
+          "last": "2026-09-08"
         },
         "esp32s3-n16r8": {
           "p50": 8255,
@@ -695,32 +695,32 @@
     }
   },
   "loc": {
-    "core": 26019,
-    "light": 35626,
-    "platform": 18478,
-    "ui": 10581,
-    "test": 57402,
-    "moondeck": 22701
+    "core": 26039,
+    "light": 35627,
+    "platform": 18503,
+    "ui": 10621,
+    "test": 57455,
+    "moondeck": 22710
   },
   "comments": {
     "core": {
-      "lines": 10436,
+      "lines": 10452,
       "ratio": 0.433
     },
     "light": {
-      "lines": 13529,
+      "lines": 13532,
       "ratio": 0.417
     },
     "platform": {
-      "lines": 6478,
-      "ratio": 0.384
+      "lines": 6500,
+      "ratio": 0.385
     },
     "ui": {
-      "lines": 3135,
-      "ratio": 0.313
+      "lines": 3164,
+      "ratio": 0.314
     },
     "test": {
-      "lines": 10769,
+      "lines": 10784,
       "ratio": 0.215
     },
     "moondeck": {
@@ -729,19 +729,19 @@
     }
   },
   "tests": {
-    "cases": 1990,
+    "cases": 1992,
     "scenarios": 27
   },
   "docs": {
-    "md_files": 219,
-    "md_lines": 34892,
-    "plans_files": 115,
+    "md_files": 220,
+    "md_lines": 36832,
+    "plans_files": 116,
     "backlog_lines": 6794,
     "lessons_lines": 705,
     "claude_md_lines": 259
   },
   "complexity": {
-    "functions": 3497,
+    "functions": 3498,
     "over_threshold": 249,
     "worst_ccn": 108
   }

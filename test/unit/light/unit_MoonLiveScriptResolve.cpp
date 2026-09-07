@@ -161,6 +161,7 @@ TEST_CASE("the compiler and the change-detector read the same file") {
 // appeared; then an old-syntax copy failing at offsets that matched nothing in the file just
 // written). The binding puts the answer in its status, and this is the predicate it asks.
 TEST_CASE("a user copy is reported as a shadow only when a shipped copy is under it") {
+    Rig rig;   // its own root: these write scripts, and without it that is the real device
     const char* name = "unit-shadow.mle";
     drop(moonlive::kScriptDir, name);
     drop(moonlive::kFactoryScriptDir, name);
@@ -182,6 +183,7 @@ TEST_CASE("a user copy is reported as a shadow only when a shipped copy is under
 // on since the user forked it? Without lineage an edit and a stale leftover look identical forever,
 // which is what let 29 pre-`void tick()` copies sit on a bench board failing every compile.
 TEST_CASE("a fork knows whether the shipped script has changed under it") {
+    Rig rig;   // its own root, for the same reason
     const char* name = "unit-lineage.mle";
     const char* shipped = "class A { void tick() {} }\n";
     drop(moonlive::kScriptDir, name);
@@ -210,6 +212,7 @@ TEST_CASE("a fork knows whether the shipped script has changed under it") {
 // Lineage is bookkeeping the DEVICE does, on the same hook that reacts to any write or delete, so
 // every writer gets it: the editor, a restored backup, a script pushed by a tool.
 TEST_CASE("forking a shipped script records what it was forked from, and reverting forgets it") {
+    Rig rig;   // its own root, for the same reason
     const char* name = "unit-fork.mle";
     const char* shipped = "class A { void tick() {} }\n";
     char userPath[96], side[128];

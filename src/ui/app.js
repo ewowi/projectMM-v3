@@ -1364,6 +1364,16 @@ function watchInstall(kind) {
                 ui.status(`Installing ${fmSize(p.total)}\u2026`);
                 ui.progress(p.read, p.total);
                 sawWork = true;
+            } else if (text && text !== "idle") {
+                // A WORKING PHASE counts as work even with no byte counts. The device reports
+                // counts only when it knows the content length, and a chunked response (any
+                // proxy, or a server that does not send Content-Length) leaves it with none: the
+                // status then walks checking -> erasing -> writing -> idle without ever matching,
+                // so an install that SUCCEEDED sat behind the overlay until the five-minute
+                // timeout. The bar stays indeterminate there, which is honest: the total is
+                // genuinely unknown.
+                ui.status(`Installing ${kind.label.toLowerCase()}\u2026`);
+                sawWork = true;
             }
             // ANSWERING AGAIN AFTER SILENCE is the rebooting install's success: the image it
             // wrote is the one now running.
@@ -2101,7 +2111,12 @@ function createCard(mod, depth) {
             // picker offers the shared-moonbase assets and matches on the CHIP the device
             // reports. Same component, same release list, a different asset family.
             moonbaseOnly: kind === "moonbase",
-            ownFirmwareKey: kind === "app" ? (ctrlValue("firmware") || null) : moonbaseChipKey(),
+            // Both tabs read the SAME control: the device sets `firmware` to the variant on the
+            // app tab and to the chip on the MoonBase tab, precisely because that is what names
+            // the release asset in each case. Re-deriving the chip from SystemModule here was a
+            // second mechanism for a job the device had already done, with a JS transform
+            // ("ESP32-S3" -> "esp32s3") that merely coincided with the build system's naming.
+            ownFirmwareKey: moonbaseAssetKeyFrom(ctrlValue("firmware")),
             // Device already knows its deviceModel (SystemModule): picker is for releases +
             // firmware compatibility only. A board picker here would invite the user to
             // mis-narrow the firmware list.
@@ -5077,6 +5092,21 @@ function syncVisibleControls(mod) {
     // other's rows in a loop: tearing down (and closing) any open <select>.
     const host = card.querySelector(":scope > .card-controls-collapse") || card;
 
+    // THE FIRMWARE CARD'S IMAGE TABS, which this patch path would otherwise never touch. The strip
+    // is built in createCard, and so are the install routes it implies: `kind` is captured in the
+    // handlers' closures. So a stale strip is not merely a wrong highlight, it is a card whose
+    // buttons write the OTHER partition than the one it names. Rebuild rather than repaint the
+    // highlight: the closures cannot be patched.
+    //
+    // The UI has two render paths and a rule must live in both (see renderChildTabs' updateTabDot,
+    // written for the other tab strip for exactly this reason).
+    const strip = card.querySelector(":scope > .tab-strip");
+    if (strip) {
+        const sel = (mod.controls.find(c => c.name === "image") || {}).value;
+        const shown = [...strip.children].findIndex(t => t.classList.contains("tab-active"));
+        if (sel !== undefined && shown >= 0 && shown !== sel) { renderCards(); return true; }
+    }
+
     const wantNames = mod.controls.filter(c => controlRendersGenerically(mod, c)).map(c => c.name);
     const haveRows = [...host.querySelectorAll(":scope > .control-row[data-key]")];
     const haveNames = haveRows.map(r => r.dataset.key);
@@ -6347,6 +6377,13 @@ function deviceFirmwareInfo() {
     const fw = findModule("Firmware") || (state.modules.find(m => m.type === "FirmwareUpdateModule"));
     if (!fw) return null;
     const ctrls = fw.controls || [];
+    // ONLY WHILE THE CARD DESCRIBES THE APP. `image` rebinds version/build/firmware/partition to
+    // whichever partition is selected, so on the MoonBase tab these read MoonBase: the badge would
+    // then compare a recovery image's version against app releases and look for a firmware asset
+    // named after a chip. The badge is global chrome, so it would stay wrong for as long as the
+    // user left that tab selected.
+    const image = (ctrls.find(c => c.name === "image") || {}).value;
+    if (image === 1) return null;
     const version = (ctrls.find(c => c.name === "version") || {}).value;
     const firmware = (ctrls.find(c => c.name === "firmware") || {}).value;
     // "unknown" is what a desktop build reports: no ESP32 variant to name.
@@ -6371,12 +6408,15 @@ function showUpdateBadge(badge, tag, label, isDesktop) {
     badge.hidden = false;
 }
 
-// The chip key a MoonBase asset is named for: "ESP32-S3" is the asset's "esp32s3", because the
-// build directory is named for the IDF target.
-function moonbaseChipKey() {
-    const sys = findModule("System");
-    const chip = ((sys && (sys.controls || []).find(c => c.name === "chip") || {}).value || "");
-    return chip ? chip.toLowerCase().replace(/-/g, "") : null;
+// The key that names a release asset, from the device's own `firmware` control. On the app tab
+// that is already the variant ("esp32s3-n16r8"); on the MoonBase tab the device reports the chip
+// ("ESP32-S3"), which the asset spells "esp32s3" after the build directory's IDF target.
+//
+// Null when the control has not arrived: the picker treats that as "offer everything" rather than
+// as a key nothing matches, which is the difference between a full list and a silently empty one.
+function moonbaseAssetKeyFrom(fw) {
+    if (!fw) return null;
+    return /^ESP32/.test(fw) ? fw.toLowerCase().replace(/-/g, "") : fw;
 }
 
 

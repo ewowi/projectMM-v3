@@ -30,12 +30,21 @@ def _lan_ip() -> str:
     """The address a board on the LAN can reach, not 127.0.0.1.
 
     No packet is sent: connect() on a UDP socket only picks the route, which is
-    what names the interface the board would arrive on.
+    what names the interface the board would arrive on. That needs a route to
+    exist, though, and a bench network with no way out has none, so a failure
+    here falls back to the hostname and finally to a placeholder. The address is
+    only PRINTED, so getting it wrong must not stop the server binding: an
+    isolated network is exactly where this script is most useful.
     """
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         s.connect(("8.8.8.8", 80))
         return s.getsockname()[0]
+    except OSError:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except OSError:
+            return "<this machine>"
     finally:
         s.close()
 

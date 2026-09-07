@@ -995,6 +995,25 @@ uv run moondeck/build/erase_flash_esp32.py --port /dev/tty.usbserial-0001
 
 Typical use: forcing a fresh-first-boot after firmware experiments leave the LittleFS partition in a state the new firmware can't migrate from, or before testing the post-flash Improv provisioning flow as if the device just came out of the factory. After erase, re-run **Build** then **Flash** — the device boots with empty persistence and goes straight to AP-fallback / Improv-awaiting-credentials.
 
+### serve_firmware
+
+Serve a built firmware over HTTP so a board can install it by URL. Long-running.
+
+```bash
+uv run moondeck/run/serve_firmware.py esp32 --port 8099
+uv run moondeck/run/serve_firmware.py build/moonbase-esp32/projectMM-moonbase.bin --port 8098
+```
+
+Takes a firmware name (resolved to `build/esp32-<name>/projectMM.bin`) or a path to any `.bin`, and
+prints the LAN URL to paste into the Firmware card or MoonBase's own page. The file is re-read per
+request, so a rebuild needs no restart.
+
+**It exists because `python -m http.server` speaks HTTP/1.0**, whose default is no keep-alive and a
+body that ends at connection close rather than at Content-Length. `esp_https_ota` asks for
+keep-alive and a 32 KB receive buffer, and against a 1.0 server the transfer crawls and then fails
+with `0xffffffff` partway through. That cost two failed OTA attempts on a bench board before the
+`HTTP/1.0` in the response line was spotted, while the same URL from GitHub worked first time.
+
 ### monitor_esp32
 
 Monitor serial output. Long-running — shows Stop button.

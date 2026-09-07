@@ -23,7 +23,7 @@ Feature branch `ha-mqtt-discovery` (already created; carries the earlier backlog
 ## Decisions locked (PO)
 
 - **JSON schema** discovery, not default schema.
-- **`unique_id` = `<last6-MAC>`** (the stable id per [ADR-0010](../../adr/0010-integration-identity-stable-hardware-id.md)), `name` = `SystemModule::deviceName()`. Never the editable name as identity.
+- **`unique_id` = `<last6-MAC>`** (the stable id per [ADR-0010](../../../adr/0010-integration-identity-stable-hardware-id.md)), `name` = `SystemModule::deviceName()`. Never the editable name as identity.
 - Gated on a new **`haDiscovery`** bool control (default on where MQTT ships); toggling re-announces / retracts.
 - Existing mqttthing topics unchanged; Discovery is additive.
 

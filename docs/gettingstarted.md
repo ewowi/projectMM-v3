@@ -330,10 +330,14 @@ If your device is not on your network at all, MoonBase opens its own WiFi access
 point and is reachable at **4.3.2.1** once you join it.
 
 MoonBase shows its own version on its page, and your device's Firmware card shows
-which MoonBase it carries. If that version is marked outdated, the same card has an
-**MoonBase** upload button that installs a newer one, so a device never needs a
-cable to get a working recovery image. Your device checks the file first and refuses
-anything that is not a MoonBase image for that board.
+which MoonBase it carries. If that version is marked outdated, the same card installs
+a newer one over the network, so keeping the recovery image current needs no cable.
+
+That update runs from the app, because only the running app can write the partition
+MoonBase lives in. So it is a way to keep MoonBase fresh, not a way back from a
+device that will not start: if the app cannot run, or MoonBase itself will not boot,
+that still takes a cable. Your device checks the image first, refusing anything whose
+magic bytes, chip or description say it is not a MoonBase image for this chip.
 
 ---
 

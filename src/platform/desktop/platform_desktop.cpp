@@ -1455,27 +1455,17 @@ bool otaFetchMoonBaseUrl(const char*, char* statusBuf, size_t statusBufLen,
 // mistyped URL and a board with no recovery image, and they are pure byte inspection. Tests
 // drive this to prove each rejection fires; the write itself has no meaning here and the
 // function reports so, which also keeps a desktop caller from believing it worked.
-bool otaWriteMoonBase(FsWriteSrc src, void* user, size_t /*contentLen*/,
-                      char* statusBuf, size_t statusBufLen, uint32_t* bytesReadOut) {
-    if (!src || !statusBuf || statusBufLen == 0 || !bytesReadOut) return false;
-    *bytesReadOut = 0;
-    uint8_t head[mm::firmware::kIdentifyBytes] = {};
-    bool abort = false;
-    const size_t n = src(reinterpret_cast<char*>(head), sizeof(head), user, &abort);
-    if (abort || n == 0) {
-        std::snprintf(statusBuf, statusBufLen, "error: no image received");
-        return false;
-    }
-    const auto info = mm::firmware::identify(head, n);
-    // The desktop build is not an ESP32 image's target, so the chip check has no local answer.
-    // Vet everything else, and accept any chip a real device would recognize.
-    if (const char* why = mm::firmware::moonBaseRejection(info, info.chip)) {
-        std::snprintf(statusBuf, statusBufLen, "error: %s", why);
-        return false;
-    }
-    std::snprintf(statusBuf, statusBufLen, "unsupported on desktop");
+// Desktop has no factory partition, so this installs nothing. It also does not CONSUME anything:
+// an earlier version read the caller's first chunk to run the vetting, which took bytes off a
+// stream the caller still owned for a check whose real coverage is unit_FirmwareImage driving
+// mm::firmware::identify directly. Refusing without touching the source is the honest stub.
+bool otaWriteMoonBase(FsWriteSrc, void*, size_t, char* statusBuf, size_t statusBufLen,
+                      uint32_t* bytesReadOut) {
+    if (statusBuf && statusBufLen > 0) std::snprintf(statusBuf, statusBufLen, "unsupported on desktop");
+    if (bytesReadOut) *bytesReadOut = 0;
     return false;
 }
+
 bool moonbaseStageInstallUrl(const char*) { return false; }
 void moonbaseClearStagedUrl() {}
 

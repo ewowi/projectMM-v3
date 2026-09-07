@@ -418,7 +418,7 @@ Track 3 total: **3.0 h**. Sequential within the track. Hardware verification (st
 - [src/core/FirmwareUpdateModule.h](src/core/FirmwareUpdateModule.h) — on-device OTA MoonModule (header-only).
 - [src/core/ImprovProvisioningModule.h](src/core/ImprovProvisioningModule.h) — Improv listener MoonModule (header-only). **Track 3.**
 - [moondeck/build/improv_provision.py](moondeck/build/improv_provision.py) — pyserial CLI for headless / rack provisioning. **Track 3.**
-- [docs/moonmodules/core/ImprovProvisioningModule.md](docs/moonmodules/core/ImprovProvisioningModule.md) — spec page. **Track 3.**
+- [docs/moonmodules/core/ImprovProvisioningModule.md](../../../moonmodules/core/moxygen/ImprovProvisioningModule.md) — spec page. **Track 3.**
 - [docs/history/plan-18.md](docs/history/plan-18.md) — this plan's archive.
 
 **Edited:**

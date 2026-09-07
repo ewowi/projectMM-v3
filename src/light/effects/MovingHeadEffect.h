@@ -100,7 +100,7 @@ public:
         // The rolled gobo starts from the slider, so a rig comes back on the pattern the user
         // chose rather than whatever a beat left behind before the last restart.
         goboNow_ = gobo;
-        goboHold_ = 0;
+        goboHoldUntil_ = 0;
         beatCount_ = 0;
     }
 
@@ -142,7 +142,7 @@ public:
         // second into a flicker. `gobo` is the base the roll walks from, so the slider still says
         // which family of patterns the rig is in.
         if (goboOnBeat) {
-            if (beat && goboHold_ == 0) {
+            if (beat && static_cast<int32_t>(elapsed() - goboHoldUntil_) >= 0) {
                 // hashInt of a BEAT COUNTER, not a stream RNG: two devices running the same rig
                 // must land on the same pattern, and a per-call RNG diverges forever the moment one
                 // of them renders an extra frame (math16.h, position-addressable randomness).
@@ -151,13 +151,15 @@ public:
                 // offset of up to 224 to it wrapped a high setting round to a low wheel position.
                 const uint16_t slot = static_cast<uint16_t>(gobo) + (hashInt(beatCount_) & 0xE0);
                 goboNow_ = static_cast<uint8_t>(slot > 255 ? 255 : slot);   // 8 coarse slots
-                goboHold_ = kGoboHoldFrames;
-            } else if (goboHold_ > 0) {
-                goboHold_--;
+                // A DEADLINE IN MILLISECONDS, not a frame count. 120 frames is two seconds at
+                // 60 fps and half a second at 240, so the hold shortened as the device got
+                // faster: the same rule every other timed thing here follows (elapsed(), the
+                // shared clock). Subtraction-based so it is safe across the millis() rollover.
+                goboHoldUntil_ = elapsed() + kGoboHoldMs;
             }
         } else {
             goboNow_ = gobo;      // the slider IS the value when the beat roll is off
-            goboHold_ = 0;
+            goboHoldUntil_ = 0;
         }
 
         // Loud music opens the beam to its full range, quiet keeps it tight. In silence the rig
@@ -219,7 +221,7 @@ private:
     static constexpr uint8_t  kDimFloor      = 40;  // a quiet band still shows its head
     /// How long a rolled gobo stays put, in frames. About two seconds at 60 fps: long enough to
     /// read the pattern, short enough that the rig still answers the music.
-    static constexpr uint8_t  kGoboHoldFrames = 120;
+    static constexpr uint32_t kGoboHoldMs = 2000;   // the documented two seconds
 
     /// One head's place in the formation: a phase offset into the sweep, and a direction.
     struct Formation { uint16_t phase; int32_t dir; };
@@ -299,7 +301,7 @@ private:
     /// The gobo actually written, which is the slider until a beat rolls it. Held separate so the
     /// slider keeps saying what the user chose rather than being overwritten by the roll.
     uint8_t   goboNow_   = 0;
-    uint8_t   goboHold_  = 0;   // frames left before another beat may roll again
+    uint32_t goboHoldUntil_ = 0;   ///< elapsed() past which a new gobo may be rolled
     uint32_t  beatCount_ = 0;   // hashed for the roll: shared by every device on the same audio
 };
 

@@ -2,9 +2,9 @@
 
 ## Context
 
-projectMM's architecture already commits (🚧, not yet built) to per-module core affinity: "each MoonModule can declare a core affinity; the scheduler respects this when pinning tasks" ([architecture.md § Parallelism](../../architecture.md#parallelism)), and the backlog holds *Task core-pinning* and a *core-1 driver task*. None of the *optimization* exists yet — and you can't optimize what you can't see. This module is the **observability foundation**: show every FreeRTOS task and the projectMM modules that run inside each, with cost. Inspired by MoonLight's [`ModuleTasks`](https://github.com/MoonModules/MoonLight/blob/main/src/MoonBase/Modules/ModuleTasks.h) (a flat task table); projectMM's version nests modules under their task and leans on projectMM's *already-free* per-module self-report.
+projectMM's architecture already commits (🚧, not yet built) to per-module core affinity: "each MoonModule can declare a core affinity; the scheduler respects this when pinning tasks" ([architecture.md § Parallelism](../../../architecture.md#parallelism)), and the backlog holds *Task core-pinning* and a *core-1 driver task*. None of the *optimization* exists yet — and you can't optimize what you can't see. This module is the **observability foundation**: show every FreeRTOS task and the projectMM modules that run inside each, with cost. Inspired by MoonLight's [`ModuleTasks`](https://github.com/MoonModules/MoonLight/blob/main/src/MoonBase/Modules/ModuleTasks.h) (a flat task table); projectMM's version nests modules under their task and leans on projectMM's *already-free* per-module self-report.
 
-Critical framing + the System-Modules taxonomy this fits into: [docs/backlog/system-modules.md](../../backlog/system-modules.md). (The original pre-implementation spec draft was deleted once the module shipped — its final spec is [core/system.md § Tasks](../../moonmodules/core/system.md#tasks) + the `TasksModule.h` `///`.)
+Critical framing + the System-Modules taxonomy this fits into: [docs/backlog/system-modules.md](../../../backlog/system-modules.md). (The original pre-implementation spec draft was deleted once the module shipped — its final spec is [core/system.md § Tasks](../../../moonmodules/core/system.md#tasks) + the `TasksModule.h` `///`.)
 
 ## Decisions locked (PO)
 
