@@ -315,7 +315,7 @@ An aquarium on a light wall: fish of three shapes swim across a dark tank, each 
 - `school`: how many tiny schooling fish (0-8).
 - `speed`: swim rate in body-lengths, so motion reads the same on any grid; each fish varies around it, and the smaller shapes drift slower, which reads as depth.
 - `spriteSize`: integer magnification (crisp nearest-neighbor); 0 = auto, scaling with the grid so a fish reads as a fish on a 16x16 matrix and on a 768-wide desktop grid alike.
-- `soundReactive`: move to the music: each sprite follows its own frequency band, so the scene breathes rather than surging as one block, and silence stands it still. Without an audio source the sprites keep moving normally.
+- `audioReactive`: move to the music: each sprite follows its own frequency band, so the scene breathes rather than surging as one block, and silence stands it still. Without an audio source the sprites keep moving normally.
 
 Uses the global palette: every fish takes a body color from it, with its band a paler version of that same color rather than a second pick, which would read as two fish fused together.
 
@@ -333,7 +333,7 @@ The classic screensaver on a light wall: chrome toasters with flapping wings and
 - `toast`: how many slices trail along (0–8).
 - `speed`: drift rate in sprite-widths, so flight reads the same on any grid; each flier varies ±25% around it.
 - `spriteSize`: integer magnification for toasters AND toast (crisp nearest-neighbor); 0 = auto, scaling with the grid so a toaster reads as a toaster on a big wall.
-- `soundReactive`: move to the music: each sprite follows its own frequency band, so the scene breathes rather than surging as one block, and silence stands it still. Without an audio source the sprites keep moving normally.
+- `audioReactive`: move to the music: each sprite follows its own frequency band, so the scene breathes rather than surging as one block, and silence stands it still. Without an audio source the sprites keep moving normally.
 
 The sprites carry their own colors (chrome, wing, crust), so the global palette does not apply. Needs a grid at least the toaster's size (12×9).
 
@@ -439,7 +439,7 @@ In this first iteration the characters travel independently and do not notice ea
 - `ghosts`: how many ghosts (0-8); the arcade cast is four.
 - `speed`: travel rate in sprite-widths, so motion reads the same on any grid; Pacman runs slightly ahead of the ghosts, as in the original.
 - `spriteSize`: integer magnification (crisp nearest-neighbor); 0 = auto, scaling with the grid so the characters read on a 16x16 matrix and on a 768-wide desktop grid alike.
-- `soundReactive`: move to the music: each sprite follows its own frequency band, so the scene breathes rather than surging as one block, and silence stands it still. Without an audio source the sprites keep moving normally.
+- `audioReactive`: move to the music: each sprite follows its own frequency band, so the scene breathes rather than surging as one block, and silence stands it still. Without an audio source the sprites keep moving normally.
 
 Pacman is always his own yellow; the ghosts take their body colors from the active palette, so they stay four distinguishable characters whatever palette is loaded.
 
@@ -459,7 +459,7 @@ On a panel narrower than the formation the ranks scroll through the court instea
 - `stepX`: how far a step moves the formation sideways, in pixels.
 - `dropY`: how far a wall turn drops it, in pixels.
 - `size`: integer magnification per art pixel; 1 on a matrix, 2 or more on a wall.
-- `soundReactive`: the beat becomes the clock: the formation steps on transients and stands still in silence, so the march locks to the track.
+- `audioReactive`: the beat becomes the clock: the formation steps on transients and stands still in silence, so the march locks to the track.
 
 The invaders take their body color from the active palette. Origin: projectMM original; inspired by Taito's Space Invaders (1978), the pixel art drawn fresh for this effect
 
@@ -478,7 +478,7 @@ Physics run on elapsed time, not per frame, so the plume looks the same on a 60 
 - `rate`: sprites launched per beat of the emit clock.
 - `emitBpm`: launches per minute, so the plume's density is a choice rather than a side effect of how fast the device runs.
 - `size`: integer magnification per art pixel.
-- `soundReactive`: one sprite per frequency band, thrown when that band is loud, so the cast maps onto the spectrum in order: the bass bands throw fish, the treble bands throw invaders. Silence throws nothing.
+- `audioReactive`: one sprite per frequency band, thrown when that band is loud, so the cast maps onto the spectrum in order: the bass bands throw fish, the treble bands throw invaders. Silence throws nothing.
 
 Colors come from the active palette, one entry per sprite, held for its whole flight. Origin: projectMM original
 
@@ -497,7 +497,7 @@ The court is fixed point rather than pixels, so the game plays identically on a 
 - `reflex`: how sharply a paddle chases the ball. Below full speed it lags a fast ball, which is where the misses come from.
 - `size`: integer magnification, when the ball is a sprite.
 - `spriteBall`: swap the classic square for a member of the shared sprite cast, re-picked on every hit, so a paddle knocks one character away and another back.
-- `soundReactive`: the ball advances only on the beat, so it crosses the court in time with the track and stands still in silence.
+- `audioReactive`: the ball advances only on the beat, so it crosses the court in time with the track and stands still in silence.
 
 Uses the global palette. Origin: projectMM original; inspired by Atari's Pong (1972)
 

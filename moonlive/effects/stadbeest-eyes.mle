@@ -1,0 +1,62 @@
+// StadBeestEyes: a frog's eye. Golden iris, black slit pupil, and it looks around.
+
+class StadBeestEyesEffect {
+  byte hue = 30;
+  byte pupil = 70;
+  byte wander = 40;
+  byte bpm = 7;
+  byte audioReactive = 0;
+
+  int dimensions() { return 2; }
+
+  string tags() { return "💫🎶"; }
+
+  void defineControls() {
+    addControl("hue", hue, 0, 255); // iris color: 30 is amber, 60 green, 180 blue
+    addControl("pupil", pupil, 10, 200); // how wide the slit opens
+    addControl("wander", wander, 0, 100); // how far the eye looks around
+    addControl("bpm", bpm, 1, 60); // how restless the gaze is
+    addControl("audioReactive", audioReactive, 0, 1); // the pupil dilates on sound
+  }
+
+  void tick() {
+    // WHERE THE EYE IS LOOKING. The gaze drifts on two oscillators at different rates, so it
+    // never repeats: an eye that swept a circle would read as a machine, not a creature.
+    int gazeX = div((beatsin(bpm, t, 255) - 128) * wander, 400);
+    int gazeY = div((beatsin(bpm + 3, t, 255) - 128) * wander, 400);
+
+    // A LOUD ROOM OPENS THE PUPIL, which is what a startled animal does. Silence closes it to the
+    // slit, so the eye reads as calm until something happens.
+    int open = pupil;
+    if (audioReactive == 1) { open = pupil + div(audioLevel() * 90, 256); }
+
+    int cx = div(width, 2) + gazeX;
+    int cy = div(height, 2) + gazeY;
+
+    for (int y = 0; y < height; y = y + 1) {
+      for (int x = 0; x < width; x = x + 1) {
+        int dx = x - cx;
+        int dy = y - cy;
+        int r = polarR(dx, dy);
+
+        // THE SLIT. A frog's pupil is a horizontal bar, not a disc: it is the single feature that
+        // makes an eye read as amphibian rather than human. Distance is measured with y weighted
+        // heavily, which squashes the circle into that bar.
+        int slit = polarR(dx, dy * 5);
+
+        if (slit < div(open, 16)) {
+          setRGB(y * width + x, 0, 0, 0);           // the pupil: genuinely black
+        } else {
+          // THE IRIS: bright at the pupil's edge, falling off outward, with fine radial fibres.
+          // The fibres are what make it look like an eye instead of a gradient.
+          int a = polarA(dx, dy);
+          int fibre = div(sin(a * 12) + 32768, 512);
+          int bright = 255 - div(r * 9, 16) + div(fibre, 3);
+          if (bright < 30) { bright = 30; }
+          if (bright > 255) { bright = 255; }
+          setPaletteColor(x, y, hue + div(r, 3), bright);
+        }
+      }
+    }
+  }
+}

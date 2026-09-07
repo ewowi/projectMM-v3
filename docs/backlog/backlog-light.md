@@ -827,6 +827,23 @@ The LED-driver increments **shipped**: increment 1 (RMT/WS2812B single-strand on
 
 (The shared lane-driver scaffolding extraction — when a 3rd parallel backend lands — is tracked separately under [§ Extract shared lane-driver scaffolding](#extract-shared-lane-driver-scaffolding-when-the-3rd-parallel-backend-lands-deferred) above.)
 
+## FixedPoint fades outside the Layer's aggregation (2026-09-07)
+
+`FixedPointEffect` calls `draw::fade` directly where every other fading effect calls
+`layer()->fadeToBlackBy`, so it skips what the Layer adds: the per-frame aggregation (N effects on
+one layer cost one buffer pass, gentlest rate wins), the framerate scaling, the sub-unit carry, and
+the buffer-generation bump. Invisible until a second effect shares the layer.
+
+The swap is one line and was tried: it makes the effect **3.1x brighter at high framerate than at
+low**, against the 1.35x band `unit_Effects_framerate` enforces. The two calls mean different
+things. `draw::fade(cv, n)` applies n every frame; `fadeToBlackBy(n)` is a RATE per reference frame
+that Layer scales by elapsed time. The `fade` control (default 70, range 0..255) was tuned against
+the first meaning, so moving it needs the default re-tuned and the trail looked at on a device, not
+a silent swap.
+
+Worth doing, as its own change: it is the last effect outside the shared fade path, and while it
+stays outside, "every fade goes through the Layer" is not true.
+
 ## Downloading a scripted palette can repoint the active one (2026-09-06)
 
 Found while testing the palette-download fixes. A `.mlp` that sorts BEFORE an already-installed one

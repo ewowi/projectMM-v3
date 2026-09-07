@@ -1198,13 +1198,35 @@ struct Parser {
             fail("the condition must test the loop variable"); return false;
         }
         lex.advance();
-        if (!expect(Tok::Less, "expected '<' — it is the only comparison a for condition takes")) return false;
+        // `<` and `<=`. The emitted guard is BranchGe(counter, limit), which IS `counter < limit`,
+        // so `<=` is the same code against a limit one higher: computed once here rather than
+        // re-tested every iteration.
+        //
+        // `>` and `>=` are refused rather than half-supported. The loop's step is parsed but its
+        // DIRECTION is not modelled: a descending loop needs the guard, the back edge and the step
+        // to agree on which way the counter moves, and a `>` accepted here would emit an ascending
+        // guard around a descending body and run zero times or forever. Counting up with the index
+        // inverted inside is the workaround, and it is what the error says.
+        bool inclusive = false;
+        if (lex.kind == Tok::LessEq) { inclusive = true; lex.advance(); }
+        else if (lex.kind == Tok::Greater || lex.kind == Tok::GreaterEq) {
+            fail("a for counts up: use `<` or `<=` and invert the index inside");
+            return false;
+        }
+        else if (!expect(Tok::Less, "expected '<' or '<=' in the for condition")) return false;
         // The bound goes to its own slot: it is read at the entry guard and again at the back edge,
         // so it has to survive the body — and a body containing a call would otherwise have to keep
         // it in a register across that call.
         VReg limitTmp = parseExpr();
         if (exprIsFixed) { fail("a loop counts in whole numbers: write toInt(x)"); return false; }
         if (failed) return false;
+        if (inclusive) {
+            // `i <= n` is `i < n + 1`, so the guard below is untouched.
+            VReg one = alloc();
+            emit({IrOp::Const, one, 0,0,0,0, 1, nullptr, {}});
+            emit({IrOp::Add, limitTmp, limitTmp, one, 0,0, 0, nullptr, {}});
+            freeTemp(one);
+        }
         if (slotHighWater >= kMaxLocals) { fail("too many loop variables"); return false; }
         const uint8_t limitSlot = slotHighWater++;
         emit({IrOp::Spill, 0, limitTmp, 0,0,0, limitSlot, nullptr, {}});
@@ -1535,13 +1557,27 @@ struct Parser {
             emit({IrOp::BranchGe, 0, z, z, 0,0, lEnd, nullptr, {}});
             freeTemp(z);
             emit({IrOp::Label,    0, 0,0,0,0, lElse, nullptr, {}});
-            if (!expect(Tok::LBrace, "expected '{': an else body is braced")) return false;
-            const uint8_t elseLocal = localCount, elseSlot = slotHighWater;
-            while (!failed && lex.kind != Tok::RBrace && lex.kind != Tok::End)
-                if (!parseStatement()) return false;
-            if (failed) return false;
-            localCount = elseLocal; slotHighWater = elseSlot;
-            if (!expect(Tok::RBrace, "expected '}' to close the else body")) return false;
+            // `else if` is an else whose body is ONE if statement, which is what it means in C and
+            // what lets a chain of conditions read as a list rather than as a staircase of nested
+            // braces. Recursing here is the whole implementation: the inner if allocates its own
+            // labels and its own scope, and this one's end-label still closes the chain.
+            //
+            // Without it a mode select (`if (mode == 0) … else if (mode == 1) …`) had to be written
+            // as separate ifs re-testing the same variable, which costs a comparison per arm and,
+            // on a script with several modes, runs into the per-script label budget.
+            if (atKeyword("if", 2)) {
+                const uint8_t chainLocal = localCount, chainSlot = slotHighWater;
+                if (!parseIf()) return false;
+                localCount = chainLocal; slotHighWater = chainSlot;
+            } else {
+                if (!expect(Tok::LBrace, "expected '{': an else body is braced")) return false;
+                const uint8_t elseLocal = localCount, elseSlot = slotHighWater;
+                while (!failed && lex.kind != Tok::RBrace && lex.kind != Tok::End)
+                    if (!parseStatement()) return false;
+                if (failed) return false;
+                localCount = elseLocal; slotHighWater = elseSlot;
+                if (!expect(Tok::RBrace, "expected '}' to close the else body")) return false;
+            }
             emit({IrOp::Label, 0, 0,0,0,0, lEnd, nullptr, {}});
         } else {
             emit({IrOp::Label, 0, 0,0,0,0, lElse, nullptr, {}});
@@ -1730,6 +1766,26 @@ struct Parser {
             const CtrlType t = currentType();
             lex.advance();
             if (lex.kind != Tok::Ident) { fail("expected a parameter name"); return false; }
+            // The SAME name checks a local declaration runs. A parameter is a local, so a name
+            // that would be refused inside the body has to be refused in the list: without these
+            // a parameter could shadow a builtin or a system variable (making it unreachable for
+            // the whole function) or repeat another parameter, where lookups find the first while
+            // the caller stages a value into both slots.
+            if (isReservedWord(lex.identBeg, lex.identLen)) {
+                fail("that name is a reserved word"); return false;
+            }
+            if (table.find(lex.identBeg, lex.identLen)) {
+                fail("that name shadows a built-in function"); return false;
+            }
+            if (sysvars.find(lex.identBeg, lex.identLen)) {
+                fail("name is a system variable"); return false;
+            }
+            if (findLocal(lex.identBeg, lex.identLen) >= 0) {
+                fail("that name is already in use here"); return false;
+            }
+            if (findMember(lex.identBeg, lex.identLen) >= 0) {
+                fail("a member of that name is declared"); return false;
+            }
             if (localCount >= kMaxLocals) { fail("too many locals"); return false; }
             if (params >= kMaxCallArgs) { fail("too many parameters"); return false; }
             locals[localCount++] = {lex.identBeg, lex.identLen, slotHighWater, t};

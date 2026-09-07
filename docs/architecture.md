@@ -291,6 +291,28 @@ network, a stronger power-fail story than dual-OTA's. A failed install deliberat
 MoonBase, visibly, rather than silently reverting to the old app; the way back is its explicit
 "Boot the app" action, which only boots an image that validates.
 
+**Updating MoonBase itself** runs the same cycle backwards: the app writes the factory slot while
+running from `ota_0`, exactly as MoonBase writes the app slot while running from factory. Neither
+image can rewrite the partition it executes from, so each installs the other and the app is the
+only thing that can repair a broken recovery image. Without it a bad MoonBase means a cable, which
+is the failure MoonBase exists to prevent.
+
+Two things make that safe enough to offer. `esp_ota_*` refuses a factory partition, so this is a
+raw `esp_partition_erase_range` + `esp_partition_write`, which also forfeits the validation
+`esp_ota_end` performs: `esp_image_verify` replaces it after the write. And because a 4 MB board
+has nowhere to stage 743 KB before erasing, the image streams straight in, so everything that can
+reject it is decided from its FIRST CHUNK, before a byte is erased: the image magic, the chip id
+(one MoonBase per chip, one paste apart, and a checksum does not catch a swap), and the descriptor
+naming `projectMM-moonbase` rather than the app. Those rules live in `src/core/FirmwareImage.h` so
+a host test can drive them. What remains is a window, during the write, in which the device holds
+no recovery image; the app keeps running throughout, so the answer to a failure is to retry.
+
+Each image reports its version from the app descriptor IDF puts in every binary, `PROJECT_VER`
+being set to the same computed version for both, so the app can read the factory partition's
+version without booting it and say when the two were built apart. A device that cannot name its
+own recovery image cannot be diagnosed: two boards that looked identical, one of which could not
+install firmware, took a bisect of the git log to tell apart.
+
 MoonBase is a standalone ESP-IDF project (`moonbase/`, ~750 KB against an 896 KB slot) sharing
 no sources with the app, the deliberate trade for an image that must stay small and, once
 working, hardly change. `moondeck/build/build_esp32.py` builds it alongside every variant that opts in

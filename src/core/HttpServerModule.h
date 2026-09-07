@@ -556,6 +556,15 @@ private:
     void handleFirmwareUrl(platform::TcpConnection& conn, const char* body);
     void handleFirmwareUpload(platform::TcpConnection& conn, const char* initialBody,
                               size_t initialLen, size_t contentLen);   // POST /api/firmware/upload
+    /// Install a new MoonBase into the factory slot: the mirror of MoonBase installing the app,
+    /// and the only way to fix a broken recovery image without a cable. Vets the image before
+    /// erasing anything, and does NOT reboot: the running app is untouched.
+    void handleMoonBaseUpload(platform::TcpConnection& conn, const char* initialBody,
+                              size_t initialLen, size_t contentLen);   // POST /api/firmware/moonbase-update
+    /// The same install, fetched by the device from a URL: what makes a GitHub release asset
+    /// installable without the browser relaying ~750 KB. Answers 202 and installs on its own
+    /// task, so the browser can poll for progress; nothing reboots, so there is no handover.
+    void handleMoonBaseUrl(platform::TcpConnection& conn, const char* body);   // POST /api/firmware/moonbase-update-url
 
     // -----------------------------------------------------------------------
     // WebSocket

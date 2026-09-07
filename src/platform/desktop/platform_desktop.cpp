@@ -1,4 +1,5 @@
 #include "platform/platform.h"
+#include "core/FirmwareImage.h"  // identify/moonBaseRejection: shared image vetting
 
 #include <algorithm>
 #include <chrono>
@@ -1436,6 +1437,45 @@ bool otaWriteStream(FsWriteSrc /*src*/, void* /*user*/, size_t /*contentLen*/,
 bool otaHasMoonBase() { return false; }
 bool otaBootMoonBase() { return false; }
 bool otaRunningMoonBase() { return false; }
+// No factory partition off-device, so nothing to read a version from.
+bool otaMoonBaseVersion(char*, size_t) { return false; }
+bool otaMoonBaseBuild(char*, size_t) { return false; }
+bool otaMoonBaseSize(uint32_t*, uint32_t*) { return false; }
+// No factory partition to install into off-device.
+bool otaFetchMoonBaseUrl(const char*, char* statusBuf, size_t statusBufLen,
+                         uint32_t* bytesReadOut, uint32_t* bytesTotalOut) {
+    if (statusBuf && statusBufLen > 0) std::snprintf(statusBuf, statusBufLen, "unsupported on desktop");
+    if (bytesReadOut) *bytesReadOut = 0;
+    if (bytesTotalOut) *bytesTotalOut = 0;
+    return false;
+}
+
+// Desktop has no factory partition, so this cannot install anything. It DOES run the vetting,
+// which is the part worth exercising off-device: the checks below are what stand between a
+// mistyped URL and a board with no recovery image, and they are pure byte inspection. Tests
+// drive this to prove each rejection fires; the write itself has no meaning here and the
+// function reports so, which also keeps a desktop caller from believing it worked.
+bool otaWriteMoonBase(FsWriteSrc src, void* user, size_t /*contentLen*/,
+                      char* statusBuf, size_t statusBufLen, uint32_t* bytesReadOut) {
+    if (!src || !statusBuf || statusBufLen == 0 || !bytesReadOut) return false;
+    *bytesReadOut = 0;
+    uint8_t head[mm::firmware::kIdentifyBytes] = {};
+    bool abort = false;
+    const size_t n = src(reinterpret_cast<char*>(head), sizeof(head), user, &abort);
+    if (abort || n == 0) {
+        std::snprintf(statusBuf, statusBufLen, "error: no image received");
+        return false;
+    }
+    const auto info = mm::firmware::identify(head, n);
+    // The desktop build is not an ESP32 image's target, so the chip check has no local answer.
+    // Vet everything else, and accept any chip a real device would recognize.
+    if (const char* why = mm::firmware::moonBaseRejection(info, info.chip)) {
+        std::snprintf(statusBuf, statusBufLen, "error: %s", why);
+        return false;
+    }
+    std::snprintf(statusBuf, statusBufLen, "unsupported on desktop");
+    return false;
+}
 bool moonbaseStageInstallUrl(const char*) { return false; }
 void moonbaseClearStagedUrl() {}
 

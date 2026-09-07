@@ -125,7 +125,9 @@ public:
 
         // Audio is read ONCE per frame, not per head: the spectrum is the same for all of them,
         // and a per-head read would be the same work times the rig size.
-        const AudioFrame* audio = audioReactive ? AudioService::latestFrame() : nullptr;
+        // Either feature needs it: goboOnBeat detects beats from the same frame, so reading only
+        // when audioReactive is on left that control doing nothing at all with audio off.
+        const AudioFrame* audio = (audioReactive || goboOnBeat) ? AudioService::latestFrame() : nullptr;
         const bool live = audio && audio->levelSmoothed >= kSilence;
 
         // A beat widens the sweep and flares the color, then decays over ~20 frames. Without the
@@ -145,7 +147,10 @@ public:
                 // must land on the same pattern, and a per-call RNG diverges forever the moment one
                 // of them renders an extra frame (math16.h, position-addressable randomness).
                 beatCount_++;
-                goboNow_ = static_cast<uint8_t>(gobo + (hashInt(beatCount_) & 0xE0));   // 8 coarse slots
+                // Clamped, not wrapped: gobo is a user control reaching 255, and adding a slot
+                // offset of up to 224 to it wrapped a high setting round to a low wheel position.
+                const uint16_t slot = static_cast<uint16_t>(gobo) + (hashInt(beatCount_) & 0xE0);
+                goboNow_ = static_cast<uint8_t>(slot > 255 ? 255 : slot);   // 8 coarse slots
                 goboHold_ = kGoboHoldFrames;
             } else if (goboHold_ > 0) {
                 goboHold_--;

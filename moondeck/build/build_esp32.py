@@ -14,6 +14,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import compute_version   # sibling: the one place a version string is derived
+
 ROOT = Path(__file__).resolve().parent.parent.parent
 ESP32_DIR = ROOT / "esp32"
 
@@ -539,6 +541,12 @@ def firmware_cmake_args(firmware: str, release: str = "", version: str = "",
     # Same for the computed version — empty leaves build_info.h's library.json default.
     if version:
         args.append(f'-DMM_VERSION="{version}"')
+    # And into the IMAGE's app descriptor, the struct IDF puts in every binary. Without it the
+    # descriptor keeps IDF's `git describe` fallback, which drifts from what the device reports
+    # (a stale tag read "container-test-1-g73e52cb9-dirt" long after that tag was gone). MoonBase
+    # carries the same string, so the app can compare the two images by equality and say when its
+    # recovery image was built apart from it.
+    args.append(f"-DPROJECT_VER={version or compute_version.compute('local', '')}")
     if spec["eth_only"]:
         # Drop the WiFi components from the link, and tell our code to compile
         # out the WiFi paths (MM_ETH_ONLY → esp32/main/CMakeLists.txt).
@@ -824,7 +832,7 @@ def main():
     subprocess.run(cmd + b_arg + ["size"], cwd=ESP32_DIR, env=env)
 
     if FIRMWARES[firmware].get("moonbase"):
-        build_moonbase(cmd, env, chip)
+        build_moonbase(cmd, env, chip, args.version)
 
 
 # ---- MoonBase flash layout, shared by every consumer of the build output ----
@@ -909,19 +917,32 @@ def moonbase_flash_files(firmware: str, build_dir: Path) -> list[tuple[str, Path
     return writes
 
 
-def build_moonbase(cmd: list[str], env: dict, chip: str) -> None:
+def build_moonbase(cmd: list[str], env: dict, chip: str, version: str = "") -> None:
     """Build the MoonBase image for `chip` into build/moonbase-<chip>.
 
-    MoonBase (moonbase/) is the second boot image the 4 MB variants carry in their factory
+    MoonBase (moonbase/) is the second boot image the MoonBase variants carry in their factory
     partition: a small firmware whose job is installing the application, since a board with one
     app slot cannot rewrite the partition it is executing from. It is chip-specific but variant-
-    agnostic, so the four classic variants share one build. Its size budget lives in
+    agnostic, so every classic variant shares one build. Its size budget lives in
     moonbase/sdkconfig.defaults; the shared partition table keeps the two images provably agreed
     on where everything lives.
+
+    `version` becomes PROJECT_VER, which IDF writes into the image's app descriptor. The app
+    reads it back from the factory partition to report which MoonBase a device carries, so
+    without it a device cannot say what it is running: a bench board that could not install
+    firmware took a bisect of the git log to identify, because every MoonBase looked alike.
+    A version is variant-independent, so passing it keeps one image per chip valid. Empty for a
+    local build, where IDF falls back to `git describe`.
     """
     moonbase_dir = ROOT / "moonbase"
     build_dir = ROOT / "build" / f"moonbase-{chip}"
     b_arg = ["-B", str(build_dir), f"-DSDKCONFIG={build_dir}/sdkconfig"]
+    if not version:
+        # The app resolves this through build_info.h's #ifndef; MoonBase has no build_info.h, so
+        # it resolves the same library.json default here rather than reporting a git-describe
+        # string the app has no way to compare against.
+        version = compute_version.compute("local", "")
+    b_arg.append(f"-DPROJECT_VER={version}")
     # Same trap as stale_feature_cache: IDF generates sdkconfig from the defaults only when it is
     # absent, so an edited moonbase/sdkconfig.defaults silently changes nothing. One defaults file
     # here, so mtime is a sufficient staleness signal.

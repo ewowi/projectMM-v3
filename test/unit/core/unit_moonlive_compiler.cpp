@@ -213,6 +213,80 @@ TEST_CASE("passing an argument costs about what writing a member costs") {
     CHECK(viaArg.codeLen() < viaMember.codeLen() * 3 / 2);
 }
 
+// --- else if, and the for's comparisons ---------------------------------------------------------
+
+TEST_CASE("a parameter name is checked the way a local is") {
+    // A parameter IS a local, so a name refused inside the body must be refused in the list.
+    // Without these checks a parameter could shadow a builtin (making it unreachable for the whole
+    // function) or repeat another, where lookups find the first while the caller stages into both.
+    for (const char* params : {"int t",            // a system variable
+                               "int width",        // a system variable
+                               "int a, int a"}) {  // the same name twice
+        moonlive::MoonLive eng;
+        char src[256];
+        std::snprintf(src, sizeof(src),
+                      "class T {\n  void helper(%s) { }\n  void tick() { helper(1); }\n}\n", params);
+        CAPTURE(params);
+        CHECK_FALSE(eng.compile(src, kTable, kSys));
+    }
+    // And a well-formed list still compiles.
+    moonlive::MoonLive ok;
+    CHECK(ok.compile("class T {\n"
+                     "  void helper(int a, int b) { setRGB(a, b, 0, 0); }\n"
+                     "  void tick() { helper(0, 42); }\n"
+                     "}\n", kTable, kSys));
+}
+
+TEST_CASE("a chain of else if arms picks exactly one") {
+    // The shape a MODE control needs. Without `else if` a chain had to be written as separate ifs
+    // re-testing the same variable, which costs a comparison per arm and, with a loop in each,
+    // exhausted the per-script label budget.
+    moonlive::MoonLive eng;
+    REQUIRE(eng.compile("class T {\n"
+                        "  byte mode = 0;\n"
+                        "  void defineControls() { addControl(\"mode\", mode, 0, 3); }\n"
+                        "  void tick() {\n"
+                        "    if (mode == 0) { setRGB(0, 10, 0, 0); }\n"
+                        "    else if (mode == 1) { setRGB(0, 20, 0, 0); }\n"
+                        "    else if (mode == 2) { setRGB(0, 30, 0, 0); }\n"
+                        "    else { setRGB(0, 40, 0, 0); }\n"
+                        "  }\n"
+                        "}\n", kTable, kSys));
+    REQUIRE(eng.ok());
+    std::vector<uint8_t> buf(3, 0);
+    eng.run(buf.data(), 1, 3, 0, "tick");
+    CHECK(buf[0] == 10);          // mode defaults to 0: the FIRST arm, and only that one
+}
+
+TEST_CASE("a for counts up to its bound with < and through it with <=") {
+    // `<=` is the same guard against a limit one higher, computed once rather than per iteration.
+    moonlive::MoonLive lt;
+    REQUIRE(lt.compile("class T {\n"
+                       "  void tick() { for (int i = 0; i < 3; i = i + 1) { setRGB(i, 99, 0, 0); } }\n"
+                       "}\n", kTable, kSys));
+    std::vector<uint8_t> a(4 * 3, 0);
+    lt.run(a.data(), 4, 3, 0, "tick");
+    CHECK(a[6] == 99);            // index 2 painted
+    CHECK(a[9] == 0);             // index 3 NOT painted
+
+    moonlive::MoonLive le;
+    REQUIRE(le.compile("class T {\n"
+                       "  void tick() { for (int i = 0; i <= 3; i = i + 1) { setRGB(i, 99, 0, 0); } }\n"
+                       "}\n", kTable, kSys));
+    std::vector<uint8_t> b(4 * 3, 0);
+    le.run(b.data(), 4, 3, 0, "tick");
+    CHECK(b[9] == 99);            // index 3 IS painted
+}
+
+TEST_CASE("a descending for is refused with the workaround named") {
+    // Refused rather than half-supported: the step's DIRECTION is not modelled, so a `>` accepted
+    // here would emit an ascending guard around a descending body.
+    moonlive::MoonLive eng;
+    CHECK_FALSE(eng.compile("class T {\n"
+                            "  void tick() { for (int i = 3; i > 0; i = i - 1) { setRGB(i, 9, 0, 0); } }\n"
+                            "}\n", kTable, kSys));
+}
+
 // UNBOUNDED recursion must degrade visibly and keep the device rendering. A fixed render-task
 // stack means the alternative is a reset, which the robustness rule forbids. A reset is what
 // this script produced before the depth guard: ~176 bytes of frame per activation against a 12 KB

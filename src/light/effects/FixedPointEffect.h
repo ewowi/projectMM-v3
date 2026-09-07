@@ -82,6 +82,14 @@ public:
 
         // Fade rather than fill: these shapes are thin, and a hard clear would throw away the trail
         // that makes a sweep readable. It still OWNS its background, since fade 255 clears fully.
+        //
+        // NOT layer()->fadeToBlackBy, though every other fading effect uses it and this one should
+        // too. The two mean different things: draw::fade takes an amount applied EVERY FRAME,
+        // fadeToBlackBy a RATE per reference frame that Layer scales by elapsed time and carries.
+        // Swapping the call without retuning `fade` (default 70, tuned against the per-frame
+        // meaning) made this effect 3.1x brighter at high framerate than at low, against a 1.35x
+        // band: unit_Effects_framerate caught it. The move is right and wants its own change, with
+        // the default re-tuned and the result looked at, not a silent swap. Backlogged.
         draw::fade(cv, fade);
 
         const uint32_t ms = elapsed();

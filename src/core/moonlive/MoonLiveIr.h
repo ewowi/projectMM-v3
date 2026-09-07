@@ -225,7 +225,14 @@ constexpr uint8_t idxCount(int32_t p) { return uint8_t((p >> 16) & 0xff); }
 /// runs for the whole program rather than per scope — a label is never reused once a loop closes —
 /// so this bounds the TOTAL number of loops in a script (8), not how deeply they nest. Nesting
 /// depth is bounded separately, by `locals`.
-static constexpr uint8_t kIrLabels = 16;
+/// Raised from 16 (2026-09-07). Sixteen bounded a script to eight loops, and a script that SELECTS
+/// between modes spends them fast: each `else if` arm is two, so a five-mode effect with a loop in
+/// each was refused with "too many branches" for asking something ordinary. The cost is four small
+/// stack arrays in the spill pass and the lowering, a few hundred bytes on a machine that already
+/// allocates its exec block from the heap. The ASSEMBLER tables did not move with it: they are
+/// sized by named functions and StoreElems, which an `else if` arm does not add, and raising them
+/// in step would have put lowerWith's frame past the 2 KB this file warns about below.
+static constexpr uint8_t kIrLabels = 40;
 
 /// Labels and fixups an ASSEMBLER's tables hold. Larger than kIrLabels because a backend allocates
 /// labels the IR never names: one per named function (a call may precede its definition, so these

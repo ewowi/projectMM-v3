@@ -304,6 +304,39 @@ keep going.
 
 ---
 
+### If your device shows MoonBase
+
+**MoonBase** is a small recovery image built into your device. If a firmware update
+is interrupted, or an installed firmware does not start, your device boots MoonBase
+instead of going dark, and its page offers you three ways out:
+
+- **Boot the app** puts you straight back if the firmware is still fine. Try this
+  first: it changes nothing on the device.
+- **From a file** installs a firmware you have already downloaded. Get the
+  `firmware-...bin` matching your device from the
+  [releases page](https://github.com/MoonModules/projectMM/releases).
+- **From a URL** downloads and installs in one step. The releases page gives you a
+  link to each file; paste it here and your device fetches it directly.
+
+Installing takes a few minutes, and the page reports its progress as it downloads.
+Your device reboots into the new firmware on its own when it finishes.
+
+Two things worth knowing. A failed install **stays** in MoonBase rather than
+pretending to have worked, so you can simply try again. And you cannot break a
+device this way: MoonBase is never overwritten by an update, so it is still there
+for the next attempt, including after a power cut in the middle of one.
+
+If your device is not on your network at all, MoonBase opens its own WiFi access
+point and is reachable at **4.3.2.1** once you join it.
+
+MoonBase shows its own version on its page, and your device's Firmware card shows
+which MoonBase it carries. If that version is marked outdated, the same card has an
+**MoonBase** upload button that installs a newer one, so a device never needs a
+cable to get a working recovery image. Your device checks the file first and refuses
+anything that is not a MoonBase image for that board.
+
+---
+
 ### Where to go next
 
 - **Understand the pipeline** — how layouts, layers, effects, modifiers and

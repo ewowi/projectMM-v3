@@ -201,7 +201,7 @@ void HttpServerModule::handleConnection(platform::TcpConnection& conn) {
             contentLen = static_cast<int>(parsed);
             int headerSize = static_cast<int>(headerEnd + 4 - req);
             int bodyNeeded = headerSize + contentLen;
-            // Only the STREAMING routes (/api/file, /api/firmware/upload) may carry a body larger than
+            // Only the STREAMING routes (/api/file, /api/firmware/upload, the MoonBase update) may carry a body larger than
             // buf: they take the buffered prefix and pull the remainder straight off the socket. For
             // every OTHER route the body is parsed whole from buf, so a body over the buffer must be
             // REJECTED (413), not truncated: a capped read would parse a JSON prefix as if complete
@@ -209,7 +209,11 @@ void HttpServerModule::handleConnection(platform::TcpConnection& conn) {
             // The request line sits at the start of req; a substring match on the path is sufficient.
             const bool isStreamingRoute =
                 std::strncmp(req, "POST /api/file", 14) == 0 ||
-                std::strncmp(req, "POST /api/firmware/upload", 25) == 0;
+                std::strncmp(req, "POST /api/firmware/upload", 25) == 0 ||
+                // A MoonBase image is ~750 KB and streams the same way. Omitted at first, and the
+                // bench caught it: the 413 fires before the handler, so the route answered "body
+                // too large" for every image, valid or not.
+                std::strncmp(req, "POST /api/firmware/moonbase-update", 34) == 0;
             if (bodyNeeded > static_cast<int>(sizeof(buf) - 1)) {
                 if (!isStreamingRoute) {
                     sendResponse(conn, 413, "application/json",
@@ -394,6 +398,19 @@ void HttpServerModule::handleConnection(platform::TcpConnection& conn) {
             // Reboot into MoonBase with nothing staged: the UI uses this for install-from-file,
             // where the browser holds the image and re-POSTs it to MoonBase once it answers.
             handleBootMoonBase(conn);
+        } else if (std::strcmp(path, "/api/firmware/moonbase-update-url") == 0 && body) {
+            // Install a new MoonBase the device fetches itself, so a release asset can be taken
+            // straight from GitHub rather than downloaded by the browser and pushed back up.
+            handleMoonBaseUrl(conn, body);
+        } else if (std::strcmp(path, "/api/firmware/moonbase-update") == 0 && body) {
+            // Install a new MOONBASE from an uploaded image: the one direction the other
+            // firmware routes cannot go, since only the running app may write the factory slot.
+            const size_t initialLen = static_cast<size_t>(totalRead) - static_cast<size_t>(body - req);
+            if (!hasContentLen) {
+                sendResponse(conn, 411, "application/json", "{\"error\":\"length required\"}");
+                return;
+            }
+            handleMoonBaseUpload(conn, body, initialLen, static_cast<size_t>(contentLen));
         } else if (std::strcmp(path, "/api/firmware/upload") == 0 && body) {
             // OTA from an uploaded .bin body (no URL, no host to serve it): the browser POSTs the
             // firmware image straight to the device, which streams it into the OTA partition. Same
@@ -980,6 +997,110 @@ void HttpServerModule::handleFirmwareUpload(platform::TcpConnection& conn, const
     conn.close();
     platform::delayMs(200);
     platform::reboot();  // noreturn: boots the flashed image
+}
+
+void HttpServerModule::handleMoonBaseUpload(platform::TcpConnection& conn, const char* initialBody,
+                                            size_t initialLen, size_t contentLen) {
+    if constexpr (!platform::hasOta) {
+        sendResponse(conn, 501, "application/json", "{\"error\":\"OTA not supported on this platform\"}");
+        return;
+    }
+    if (!platform::otaHasMoonBase()) {
+        sendResponse(conn, 409, "application/json", "{\"error\":\"no MoonBase on this device\"}");
+        return;
+    }
+    // Running FROM MoonBase means the factory slot is the executing one, which cannot be written.
+    // Rejecting here names the fix; otaWriteMoonBase refuses it again and IS the real guard: this
+    // one exists for the message, so a user is told to boot the app rather than reading a generic
+    // write error. Deliberately two checks, cheap ones, and the inner may never be removed.
+    if (platform::otaRunningMoonBase()) {
+        sendResponse(conn, 409, "application/json",
+                     "{\"error\":\"running from MoonBase, boot the app first\"}");
+        return;
+    }
+    if (otaInFlight()) {
+        sendResponse(conn, 409, "application/json", "{\"error\":\"ota already in progress\"}");
+        return;
+    }
+    const size_t initial = initialLen < contentLen ? initialLen : contentLen;
+    UploadSource src{&conn, initialBody, initial, contentLen,
+                     platform::millis() + kFirmwareUploadHardMs};
+    g_otaBytesTotal = static_cast<uint32_t>(contentLen);
+    g_otaBytesRead = 0;
+    const bool ok = platform::otaWriteMoonBase(&uploadPull, &src, contentLen,
+                                               g_otaStatus, sizeof(g_otaStatus), &g_otaBytesRead);
+    if (!ok) {
+        // DRAIN BEFORE ANSWERING. This route rejects an image from its first chunk, which is the
+        // whole point: nothing is erased until the image proves itself. But the client is still
+        // sending, and replying into a socket with ~750 KB in flight means the peer sees a reset
+        // instead of the reason. The bench showed it as an empty 500 on the one case that matters
+        // most, the wrong-chip image. uploadPull is bounded by its own deadlines, so a peer that
+        // stops sending cannot hold the connection open.
+        char discard[512];
+        for (bool done = false; !done;) {
+            bool abort = false;
+            if (uploadPull(discard, sizeof(discard), &src, &abort) == 0 || abort) done = true;
+        }
+        char msg[128];
+        std::snprintf(msg, sizeof(msg), "{\"error\":\"%.90s\"}", g_otaStatus);
+        sendResponse(conn, 500, "application/json", msg);
+        return;
+    }
+    // NO REBOOT, unlike every other firmware route. The app was never replaced: it wrote the
+    // image the device falls back to, and carries on running. Rebooting would cost an outage for
+    // nothing, and would hide whether the app itself still works.
+    // Re-READ then re-bind: the card holds the version in a buffer filled at setup, so rebuilding
+    // the controls alone would re-publish the string belonging to the image just replaced.
+    if (auto* fw = static_cast<FirmwareUpdateModule*>(findModuleByName("Firmware"))) {
+        fw->readMoonBaseVersion();
+        fw->rebuildControls();
+    }
+    sendResponse(conn, 200, "application/json", "{\"ok\":true}");
+}
+
+void HttpServerModule::handleMoonBaseUrl(platform::TcpConnection& conn, const char* body) {
+    if constexpr (!platform::hasOta) {
+        sendResponse(conn, 501, "application/json", "{\"error\":\"OTA not supported on this platform\"}");
+        return;
+    }
+    if (!platform::otaHasMoonBase()) {
+        sendResponse(conn, 409, "application/json", "{\"error\":\"no MoonBase on this device\"}");
+        return;
+    }
+    if (platform::otaRunningMoonBase()) {
+        sendResponse(conn, 409, "application/json",
+                     "{\"error\":\"running from MoonBase, boot the app first\"}");
+        return;
+    }
+    if (otaInFlight()) {
+        sendResponse(conn, 409, "application/json", "{\"error\":\"ota already in progress\"}");
+        return;
+    }
+    char url[512] = {};
+    mm::json::parseString(body, "url", url, sizeof(url));
+    if (url[0] == 0) {
+        sendResponse(conn, 400, "application/json", "{\"error\":\"url required\"}");
+        return;
+    }
+    if (std::strncmp(url, "http://", 7) != 0 && std::strncmp(url, "https://", 8) != 0) {
+        sendResponse(conn, 400, "application/json",
+                     "{\"error\":\"url must start with http:// or https://\"}");
+        return;
+    }
+    g_otaBytesRead = 0;
+    g_otaBytesTotal = 0;
+    // 202 AND RETURN, like the app's URL install. The install runs on its own task, so the
+    // browser is free to poll for progress while it works: a request held open until the install
+    // finished could only ever report "installing" and then "installed", with no bar in between.
+    const bool started = platform::otaFetchMoonBaseUrl(url, g_otaStatus, sizeof(g_otaStatus),
+                                                       &g_otaBytesRead, &g_otaBytesTotal);
+    if (!started) {
+        char msg[128];
+        std::snprintf(msg, sizeof(msg), "{\"error\":\"%.90s\"}", g_otaStatus);
+        sendResponse(conn, 500, "application/json", msg);
+        return;
+    }
+    sendResponse(conn, 202, "application/json", "{\"ok\":true}");
 }
 
 void HttpServerModule::serveFile(platform::TcpConnection& conn, const char* filename, const char* contentType) {
