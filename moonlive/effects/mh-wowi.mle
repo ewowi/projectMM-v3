@@ -1,0 +1,31 @@
+// Wowi: a wide slow sweep with alternate heads mirrored, and no audio at all.
+
+class WowiEffect {
+  byte bpm = 30;
+  byte pan = 175;
+  byte tilt = 90;
+  byte range = 20;
+  byte zoom = 20;
+
+  int dimensions() { return 1; }
+
+  string tags() { return "🗼🎯"; }
+
+  void defineControls() {
+    addControl("bpm", bpm, 1, 120); // how fast the heads swing
+    addControl("pan", pan, 0, 255); // where the sideways swing is centered
+    addControl("tilt", tilt, 0, 255); // where the vertical swing is centered
+    addControl("range", range, 0, 127); // how far either swing travels
+    addControl("zoom", zoom, 0, 255); // how tight the beam is
+  }
+
+  void tick() {
+    for (int i = 0; i < height; i = i + 1) {
+      int phase = t;
+      if (mod(i, 2) == 0) { phase = t + 32768; }
+      setPan(i, pan - range + div(beatsin(bpm, phase, 255) * range * 2, 255));
+      setTilt(i, tilt - range + div(beatsin(bpm, phase, 255) * range * 2, 255));
+      setZoom(i, zoom);
+    }
+  }
+}

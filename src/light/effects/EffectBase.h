@@ -131,9 +131,23 @@ public:
     void setPan(nrOfLightsType index, uint8_t value);
     void setTilt(nrOfLightsType index, uint8_t value);
     void setZoom(nrOfLightsType index, uint8_t value);
+    /// The beam's own two roles, on the fixtures that carry them. `rotate` spins the gobo or the
+    /// prism; `gobo` selects the pattern, and on most heads its byte is a RANGE per slot rather
+    /// than an index, so a fixture's manual decides what a value means.
+    ///
+    /// Same contract as the aim setters above: a no-op where the channel is absent, and never
+    /// scaled by brightness. They complete the motion set the preset model already carries
+    /// (FixtureChannels holds all five), which until now had no way for an effect to reach them.
+    void setRotate(nrOfLightsType index, uint8_t value);
+    void setGobo(nrOfLightsType index, uint8_t value);
 
     /// True when the lights carry pan or tilt, so an effect can skip motion maths on a strip.
     bool movable() const;
+
+    /// True when the lights carry a gobo or rotate channel, so an effect can hide beam controls
+    /// that would do nothing on this rig. Separate from movable(): plenty of heads pan and tilt
+    /// without a gobo wheel, and a static wash can carry one without moving at all.
+    bool hasBeam() const;
 };
 
 } // namespace mm

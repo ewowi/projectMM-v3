@@ -11,7 +11,7 @@
     "Layouts",
     "GridLayout",
     "Drivers",
-    "NetworkSendDriver"
+    "PreviewDriver"
   ],
   "description": "Stack TWO modifiers on one Layer (Region then Multiply) and verify the chain composes live end-to-end — the capability the old single-modifier engine couldn't do. Prepares its own canvas: Layout(Grid 32x32) + Layer + NoiseEffect + Region(0..50) + Multiply(2x), measures the composite, then adds a third (Checkerboard mask) and measures again, then removes the middle modifier and measures — exercising add/remove on a multi-modifier chain. A broken fold (null buffer, wrong light count, crash on a disabled/removed stage) shows up as a failed measure. The fold composition + order semantics are pinned by unit_Layer_modifier_chain; this is the live end-to-end gate.",
   "fixture": [
@@ -88,9 +88,10 @@
     {
       "name": "fix-artnet",
       "op": "add_module",
-      "id": "ArtNet",
-      "type": "NetworkSendDriver",
-      "parent_id": "Drivers"
+      "id": "Preview",
+      "type": "PreviewDriver",
+      "parent_id": "Drivers",
+      "description": "An in-process sink, not a network one: this scenario is about how a modifier CHAIN folds, and routing it through NetworkSendDriver pulled socket behavior into a test that is not about the network (CodeRabbit #29). PreviewDriver consumes the composite in memory."
     }
   ],
   "steps": [
@@ -106,9 +107,9 @@
             "min": 8,
             "max": 43,
             "n": 32,
-            "samples": [31, 8, 9, 16, 14, 17, 12, 18, 15, 24, 32, 43, 17, 16, 8, 8, 8, 8, 8, 10, 9, 8, 9, 8, 12, 10, 10, 24, 10, 8, 10, 10]
+            "samples": [14, 17, 12, 18, 15, 24, 32, 43, 17, 16, 8, 8, 8, 8, 8, 10, 9, 8, 9, 8, 12, 10, 10, 24, 10, 8, 10, 10, 13, 11, 9, 10]
           },
-          "last_updated": "2026-09-06"
+          "last_updated": "2026-09-07"
         },
         "desktop-windows": {
           "tick_us": {
@@ -162,13 +163,13 @@
         "desktop-macos": {
           "tick_us": {
             "p50": 9,
-            "p95": 36,
+            "p95": 26,
             "min": 6,
             "max": 56,
             "n": 32,
-            "samples": [36, 7, 7, 14, 10, 21, 11, 15, 13, 22, 23, 26, 14, 14, 7, 7, 6, 7, 7, 9, 7, 6, 9, 7, 7, 9, 9, 56, 8, 9, 9, 9]
+            "samples": [10, 21, 11, 15, 13, 22, 23, 26, 14, 14, 7, 7, 6, 7, 7, 9, 7, 6, 9, 7, 7, 9, 9, 56, 8, 9, 9, 9, 10, 10, 8, 8]
           },
-          "last_updated": "2026-09-06"
+          "last_updated": "2026-09-07"
         },
         "desktop-windows": {
           "tick_us": {
@@ -219,14 +220,14 @@
       "observed": {
         "desktop-macos": {
           "tick_us": {
-            "p50": 26,
-            "p95": 72,
+            "p50": 25,
+            "p95": 69,
             "min": 21,
-            "max": 74,
+            "max": 72,
             "n": 32,
-            "samples": [74, 27, 23, 48, 30, 65, 33, 48, 41, 63, 72, 69, 43, 46, 26, 22, 24, 22, 22, 28, 21, 21, 24, 21, 27, 24, 25, 26, 24, 24, 24, 25]
+            "samples": [30, 65, 33, 48, 41, 63, 72, 69, 43, 46, 26, 22, 24, 22, 22, 28, 21, 21, 24, 21, 27, 24, 25, 26, 24, 24, 24, 25, 28, 25, 23, 24]
           },
-          "last_updated": "2026-09-06"
+          "last_updated": "2026-09-07"
         },
         "desktop-windows": {
           "tick_us": {
@@ -252,14 +253,14 @@
       "observed": {
         "desktop-macos": {
           "tick_us": {
-            "p50": 47,
-            "p95": 123,
+            "p50": 44,
+            "p95": 112,
             "min": 37,
             "max": 138,
             "n": 32,
-            "samples": [123, 47, 47, 72, 52, 88, 55, 77, 73, 112, 110, 138, 77, 83, 47, 47, 43, 43, 44, 41, 42, 40, 44, 37, 39, 44, 43, 48, 43, 45, 44, 44]
+            "samples": [52, 88, 55, 77, 73, 112, 110, 138, 77, 83, 47, 47, 43, 43, 44, 41, 42, 40, 44, 37, 39, 44, 43, 48, 43, 45, 44, 44, 50, 44, 40, 45]
           },
-          "last_updated": "2026-09-06"
+          "last_updated": "2026-09-07"
         },
         "desktop-windows": {
           "tick_us": {

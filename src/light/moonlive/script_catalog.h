@@ -14,7 +14,6 @@ namespace mm::moonlive {
 /// Every factory effect, by file name. They live in `moonlive/effects/`
 /// upstream and in the factory script directory on the device.
 constexpr const char* kEffectCatalog[] = {
-    "aim.mle",
     "aurora.mle",
     "ballpit.mle",
     "balls.mle",
@@ -30,6 +29,11 @@ constexpr const char* kEffectCatalog[] = {
     "gradient.mle",
     "lines.mle",
     "metal.mle",
+    "mh-aim.mle",
+    "mh-ambient.mle",
+    "mh-sweep.mle",
+    "mh-troy.mle",
+    "mh-wowi.mle",
     "nebula.mle",
     "noise.mle",
     "octopus.mle",
@@ -40,14 +44,12 @@ constexpr const char* kEffectCatalog[] = {
     "ripples.mle",
     "sparkle.mle",
     "spectrum.mle",
-    "sweep.mle",
     "trails.mle",
 };
-constexpr size_t kEffectCatalogCount = 28;
+constexpr size_t kEffectCatalogCount = 31;
 /// What each effect above declares about itself, in the same order.
 /// A dimension of 0 means the script says nothing, so the DEVICE decides the default.
 constexpr unsigned char kEffectCatalogDim[] = {
-    1,
     3,
     2,
     2,
@@ -63,6 +65,11 @@ constexpr unsigned char kEffectCatalogDim[] = {
     3,
     2,
     2,
+    1,
+    1,
+    1,
+    1,
+    1,
     3,
     2,
     2,
@@ -73,27 +80,30 @@ constexpr unsigned char kEffectCatalogDim[] = {
     2,
     3,
     2,
-    1,
     3,
 };
 /// The emoji each declares, "" when it declares none.
 constexpr const char* kEffectCatalogTags[] = {
+    "💫",
+    "💫✨",
+    "💫",
+    "💫",
+    "💫",
+    "💫✨",
+    "💫",
+    "💫",
+    "💫",
+    "💫🖌️",
+    "💫✨",
+    "💫🖌️",
+    "💫",
+    "💫",
+    "💫🖌️",
     "💫🎯",
-    "💫",
-    "💫✨",
-    "💫",
-    "💫",
-    "💫",
-    "💫✨",
-    "💫",
-    "💫",
-    "💫",
-    "💫🖌️",
-    "💫✨",
-    "💫🖌️",
-    "💫",
-    "💫",
-    "💫🖌️",
+    "🗼🎶🎯",
+    "💫🎯",
+    "🗼🎶🎯",
+    "🗼🎯",
     "💫🖌️",
     "💫",
     "💫🖌️",
@@ -104,7 +114,6 @@ constexpr const char* kEffectCatalogTags[] = {
     "💫",
     "💫",
     "💫🎶",
-    "💫🎯",
     "💫🖌️",
 };
 constexpr const char* kEffectFolder = "effects";   ///< its directory upstream
@@ -115,19 +124,25 @@ constexpr const char* kLayoutCatalog[] = {
     "diagonal.mll",
     "grid.mll",
     "lattice.mll",
+    "lightcrafter16.mll",
     "reversed-row.mll",
     "ring.mll",
     "rose.mll",
+    "se16.mll",
+    "sixteen-rings.mll",
     "two-rows.mll",
 };
-constexpr size_t kLayoutCatalogCount = 7;
+constexpr size_t kLayoutCatalogCount = 10;
 /// What each layout above declares about itself, in the same order.
 /// A dimension of 0 means the script says nothing, so the DEVICE decides the default.
 constexpr unsigned char kLayoutCatalogDim[] = {
     2,
     2,
     3,
+    2,
     1,
+    2,
+    2,
     2,
     2,
     2,
@@ -137,9 +152,12 @@ constexpr const char* kLayoutCatalogTags[] = {
     "💫",
     "💫",
     "💫",
+    "🚥",
     "💫",
     "💫",
     "💫",
+    "🚥",
+    "🚥",
     "💫",
 };
 constexpr const char* kLayoutFolder = "layouts";   ///< its directory upstream
@@ -219,6 +237,6 @@ constexpr const char* kPaletteCatalogTags[] = {
 };
 constexpr const char* kPaletteFolder = "palettes";   ///< its directory upstream
 
-constexpr size_t kCatalogCount = 46;   ///< every factory script, all roles
+constexpr size_t kCatalogCount = 52;   ///< every factory script, all roles
 
 } // namespace mm::moonlive

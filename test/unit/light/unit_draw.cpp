@@ -761,3 +761,90 @@ TEST_CASE("scrolling along y moves every column, and along z every cell of the v
             CHECK(vol.data()[((size_t(1) * 2 + y) * 2 + x) * 3] == 1);
         }
 }
+
+// --- ring and strokeLine -----------------------------------------------------------------------
+//
+// The two shapes a fixed-point canvas needs beyond a disc: an outline and a thick line. Ported for
+// Sutaburosu's fixed-point demos, which draw clock hands, orbits and spokes from them.
+
+TEST_CASE("a ring is hollow: lit on its band, dark at its center") {
+    Buffer buf;
+    Coord3D dims{11, 11, 1};
+    REQUIRE(buf.allocate(121, 3));
+    const draw::Canvas cv = draw::Canvas::of(buf, 11, 11, 1);
+    draw::ring(cv, draw::toSub(5), draw::toSub(5), draw::toSub(3), draw::toSub(1),
+               RGB{255, 255, 255});
+
+    // The hole is what separates a ring from a disc, and the property a caller relies on when
+    // stacking rings: the middle must stay dark however thick the stroke.
+    CHECK(isBlack(at(buf, dims, 5, 5, 0)));
+    CHECK(at(buf, dims, 5, 2, 0).r > 0);       // on the band, three up from center
+    CHECK(isBlack(at(buf, dims, 0, 0, 0)));    // outside it entirely
+}
+
+TEST_CASE("a ring's inner edge is antialiased, not cut") {
+    Buffer buf;
+    Coord3D dims{21, 21, 1};
+    REQUIRE(buf.allocate(441, 3));
+    const draw::Canvas cv = draw::Canvas::of(buf, 21, 21, 1);
+    draw::ring(cv, draw::toSub(10), draw::toSub(10), draw::toSub(6), draw::toSub(2),
+               RGB{255, 255, 255});
+
+    // Walking in from the band toward the center must pass through a PARTIAL pixel. Two discs
+    // subtracted would step straight from full to black here, which is the bug this shape exists to
+    // avoid: the inner edge of a subtracted ring is never blended, only removed.
+    bool sawPartial = false;
+    for (int y = 10; y >= 0; y--) {
+        const uint8_t v = at(buf, dims, 10, static_cast<lengthType>(y), 0).r;
+        if (v > 0 && v < 255) sawPartial = true;
+    }
+    CHECK(sawPartial);
+}
+
+TEST_CASE("a thick line covers pixels a one-pixel line would miss") {
+    Buffer thin, thick;
+    Coord3D dims{15, 15, 1};
+    REQUIRE(thin.allocate(225, 3));
+    REQUIRE(thick.allocate(225, 3));
+    const draw::Canvas cvThin = draw::Canvas::of(thin, 15, 15, 1);
+    const draw::Canvas cvThick = draw::Canvas::of(thick, 15, 15, 1);
+
+    draw::line(cvThin, {2, 7, 0}, {12, 7, 0}, RGB{255, 255, 255});
+    draw::strokeLine(cvThick, draw::toSub(2), draw::toSub(7), draw::toSub(12), draw::toSub(7),
+                     draw::toSub(3), RGB{255, 255, 255});
+
+    // Width is the whole point: a row either side of the axis is dark for the thin line and lit for
+    // the thick one.
+    CHECK(isBlack(at(thin, dims, 7, 5, 0)));
+    CHECK(at(thick, dims, 7, 6, 0).r > 0);
+    CHECK(at(thick, dims, 7, 8, 0).r > 0);
+}
+
+TEST_CASE("a thick line stops at its endpoints instead of running along the infinite line") {
+    Buffer buf;
+    Coord3D dims{15, 15, 1};
+    REQUIRE(buf.allocate(225, 3));
+    const draw::Canvas cv = draw::Canvas::of(buf, 15, 15, 1);
+    // A short horizontal stroke in the middle of the grid.
+    draw::strokeLine(cv, draw::toSub(6), draw::toSub(7), draw::toSub(8), draw::toSub(7),
+                     draw::toSub(2), RGB{255, 255, 255});
+
+    CHECK(at(buf, dims, 7, 7, 0).r > 0);       // on the segment
+    // Well past both ends must be dark. Without clamping the projection to the segment, every pixel
+    // in the row would be "on the line" and the stroke would span the whole grid.
+    CHECK(isBlack(at(buf, dims, 0, 7, 0)));
+    CHECK(isBlack(at(buf, dims, 14, 7, 0)));
+}
+
+TEST_CASE("a zero-length thick line draws a dot rather than nothing") {
+    Buffer buf;
+    Coord3D dims{9, 9, 1};
+    REQUIRE(buf.allocate(81, 3));
+    const draw::Canvas cv = draw::Canvas::of(buf, 9, 9, 1);
+    // What a fully retracted clock hand asks for. Dividing by the length would be a divide by zero,
+    // so this case is handled rather than guarded against.
+    draw::strokeLine(cv, draw::toSub(4), draw::toSub(4), draw::toSub(4), draw::toSub(4),
+                     draw::toSub(3), RGB{255, 255, 255});
+
+    CHECK(at(buf, dims, 4, 4, 0).r > 0);
+}

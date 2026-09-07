@@ -105,6 +105,114 @@ TEST_CASE("arguments reach a function two calls deep") {
     CHECK(buf[6] == 44);
 }
 
+// --- function arguments ------------------------------------------------------------------------
+//
+// Passed BY VALUE, through a block in the arena rather than in the frame: each function opens its
+// own frame and a slot is addressed off the current frame pointer (on Xtensa via the windowed ABI's
+// `entry a1, N`), so a caller cannot reach the slot its callee will read. The arena is what both
+// activations share. See kScriptArgBase in MoonLiveBuiltins.h.
+
+TEST_CASE("a function receives the value its caller passed") {
+    moonlive::MoonLive eng;
+    REQUIRE(eng.compile("class T {\n"
+                        "  void paint(int idx, int level) { setRGB(idx, level, 0, 0); }\n"
+                        "  void tick() { paint(0, 11); paint(1, 22); }\n"
+                        "}\n", kTable, kSys));
+    REQUIRE(eng.ok());
+    std::vector<uint8_t> buf(4 * 3, 0);
+    eng.run(buf.data(), 4, 3, 0, "tick");
+    CHECK(buf[0] == 11);
+    CHECK(buf[3] == 22);
+}
+
+TEST_CASE("an argument is a copy: writing the parameter leaves the caller's variable alone") {
+    // By VALUE is the contract, and this is what it means at the call site. A reference would make
+    // the second pixel 99 as well.
+    moonlive::MoonLive eng;
+    REQUIRE(eng.compile("class T {\n"
+                        "  void bump(int v) { v = 99; setRGB(0, v, 0, 0); }\n"
+                        "  void tick() { int mine = 7; bump(mine); setRGB(1, mine, 0, 0); }\n"
+                        "}\n", kTable, kSys));
+    REQUIRE(eng.ok());
+    std::vector<uint8_t> buf(4 * 3, 0);
+    eng.run(buf.data(), 4, 3, 0, "tick");
+    CHECK(buf[0] == 99);   // the callee saw its own copy
+    CHECK(buf[3] == 7);    // the caller's variable is untouched
+}
+
+TEST_CASE("a recursive function keeps its own arguments through the calls it makes") {
+    // THE case the single arena block has to survive. One block serves every depth only because a
+    // callee copies its arguments into its own frame before it can call anything; without that
+    // copy, the inner call would overwrite the outer one's arguments and the countdown would never
+    // terminate or would paint the wrong pixels.
+    moonlive::MoonLive eng;
+    REQUIRE(eng.compile("class T {\n"
+                        "  void down(int n) { if (n > 0) { setRGB(n, n, 0, 0); down(n - 1); } }\n"
+                        "  void tick() { down(3); }\n"
+                        "}\n", kTable, kSys));
+    REQUIRE(eng.ok());
+    std::vector<uint8_t> buf(4 * 3, 0);
+    eng.run(buf.data(), 4, 3, 0, "tick");
+    CHECK(buf[9] == 3);    // each activation kept its own n
+    CHECK(buf[6] == 2);
+    CHECK(buf[3] == 1);
+}
+
+TEST_CASE("a nested call does not clobber the arguments of the call it sits inside") {
+    // `outer(inner(x))`: the inner call writes the same arena block. It has RETURNED before the
+    // outer arguments are written, which is what makes one block enough.
+    moonlive::MoonLive eng;
+    REQUIRE(eng.compile("class T {\n"
+                        "  int twice(int v) { return v * 2; }\n"
+                        "  void paint(int idx, int level) { setRGB(idx, level, 0, 0); }\n"
+                        "  void tick() { paint(0, twice(21)); }\n"
+                        "}\n", kTable, kSys));
+    REQUIRE(eng.ok());
+    std::vector<uint8_t> buf(4 * 3, 0);
+    eng.run(buf.data(), 4, 3, 0, "tick");
+    CHECK(buf[0] == 42);
+}
+
+TEST_CASE("calling a function with the wrong number of arguments is refused") {
+    // Both directions, because a silent mismatch would read whatever the arena block held from an
+    // earlier call: a wrong picture rather than an error.
+    moonlive::MoonLive tooFew;
+    CHECK_FALSE(tooFew.compile("class T {\n"
+                               "  void paint(int a, int b) { setRGB(a, b, 0, 0); }\n"
+                               "  void tick() { paint(1); }\n"
+                               "}\n", kTable, kSys));
+    moonlive::MoonLive tooMany;
+    CHECK_FALSE(tooMany.compile("class T {\n"
+                                "  void paint(int a) { setRGB(a, 1, 0, 0); }\n"
+                                "  void tick() { paint(1, 2); }\n"
+                                "}\n", kTable, kSys));
+}
+
+// What an argument COSTS. The question a script author actually asks before rewriting a helper to
+// take parameters, and the reason it is measured rather than reasoned about: the answer decides
+// whether the clearer form is also the affordable one.
+TEST_CASE("passing an argument costs about what writing a member costs") {
+    // The OLD style: a member is the channel, written by the caller and read by the helper.
+    moonlive::MoonLive viaMember;
+    REQUIRE(viaMember.compile("class T {\n"
+                              "  int idx = 0;\n"
+                              "  void paint() { setRGB(idx, 11, 0, 0); }\n"
+                              "  void tick() { idx = 0; paint(); idx = 1; paint(); }\n"
+                              "}\n", kTable, kSys));
+    // The NEW style: the same work, said directly.
+    moonlive::MoonLive viaArg;
+    REQUIRE(viaArg.compile("class T {\n"
+                           "  void paint(int idx) { setRGB(idx, 11, 0, 0); }\n"
+                           "  void tick() { paint(0); paint(1); }\n"
+                           "}\n", kTable, kSys));
+    MESSAGE("member-passing: " << viaMember.codeLen() << " bytes, "
+            "argument: " << viaArg.codeLen() << " bytes");
+    // Both go through the arena: a member write is StoreCtrl, an argument is StoreCtrl32 into the
+    // argument block, and the helper reads it back either way. So the argument form must not cost
+    // materially more, and this pins that rather than trusting it.
+    CHECK(viaArg.codeLen() < viaMember.codeLen() * 3 / 2);
+}
+
 // UNBOUNDED recursion must degrade visibly and keep the device rendering. A fixed render-task
 // stack means the alternative is a reset, which the robustness rule forbids. A reset is what
 // this script produced before the depth guard: ~176 bytes of frame per activation against a 12 KB

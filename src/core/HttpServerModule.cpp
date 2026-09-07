@@ -922,6 +922,15 @@ void HttpServerModule::applyFileChanged(const char* path) {
     // and deferring also sends this response before a network-reconfiguring apply can cut the
     // socket (the bench found both).
     if (auto* fs = FilesystemModule::instance()) fs->requestConfigApply(path);
+    // A write into the USER script directory of a name the firmware also ships is a FORK: from here
+    // on that copy shadows the shipped one and every library update is invisible behind it. Record
+    // what it was forked from, so the binding can later say "the shipped one has been updated"
+    // rather than leaving an edit and a stale leftover looking identical forever.
+    //
+    // Here rather than in the editor because the DEVICE is what knows both copies exist: every
+    // writer gets lineage, including a script pushed by a script or restored from a backup, and the
+    // UI stays out of a bookkeeping job it would have to repeat per caller.
+    moonlive::noteForkedFrom(path);
     if (!scheduler_) return;
     // requestPrepareTree, never prepareTree: the immediate walk runs a scripted layout's JIT'd code
     // on the CALLING task's stack (Scheduler.h:74-77), and a write arrives on the small web-server

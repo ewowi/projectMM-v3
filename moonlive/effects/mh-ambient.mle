@@ -1,0 +1,34 @@
+// Ambient: heads that drift, and lift toward the ceiling as the room gets louder.
+
+class AmbientEffect {
+  byte panBpm = 5;
+  byte panMin = 45;
+  byte panMax = 135;
+  byte tiltMin = 128;
+  byte tiltMax = 255;
+
+  int dimensions() { return 1; }
+
+  string tags() { return "🗼🎶🎯"; }
+
+  void defineControls() {
+    addControl("panBpm", panBpm, 1, 60); // how fast the slow drift travels
+    addControl("panMin", panMin, 0, 255); // one end of the drift
+    addControl("panMax", panMax, 0, 255); // the other end
+    addControl("tiltMin", tiltMin, 0, 255); // where the heads rest when the room is quiet
+    addControl("tiltMax", tiltMax, 0, 255); // how high they lift when it is loud
+  }
+
+  void tick() {
+    int loud = audioLevel();
+    for (int i = 0; i < height; i = i + 1) {
+      // Each head takes its own band, so the rig ripples rather than lifting as one block.
+      int band = audioBand(div(i * 16, height));
+      int spread = div(i * 255, height);
+      int swing = beatsin(panBpm, t + spread, 255);
+      setPan(i, panMin + div(swing * (panMax - panMin), 255));
+      setTilt(i, tiltMin + div(band * (tiltMax - tiltMin), 255));
+      setRGB(i, div(loud * 255, 256), div(band * 128, 256), 64);
+    }
+  }
+}

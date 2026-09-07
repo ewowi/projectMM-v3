@@ -3163,34 +3163,27 @@ function createControl(moduleName, moduleType, ctrl) {
                                 alert("could not download " + file + ": " + (e && e.message ? e.message : e));
                                 return;
                             }
-                            // The device re-lists its .mlp files on the next state fetch, so the
-                            // palette now HAS an index. Find it by name and select it, which is
-                            // what the user asked for by picking it.
+                            // The write itself republishes the option list: POST /api/file ends in
+                            // applyFileChanged() -> requestPrepareTree() -> Drivers::prepare(), which
+                            // re-lists the `.mlp` files. So one fetch after the download sees the new
+                            // palette and it selects in a single click, like every other script role.
                             mlCatalog = null;               // it is local now: drop the cached list
-                            const want = file.replace(/\.mlp$/, "");
-                            // The device only re-lists its .mlp files when its controls rebuild, which
-                            // can land a beat after the state fetch. So look, and if the new palette
-                            // is not there yet, fetch once more before giving up: without the retry a
-                            // download that worked ended in nothing happening and no message.
+                            // Match on the FILENAME, extension included: the device publishes each
+                            // scripted palette under its file name (`spectrum.mlp`), and only the
+                            // picker's displayName drops the extension. Comparing the stripped form
+                            // never matched, so a download that worked ended in an error.
                             const findCtrl = () => {
                                 const mod = allModules().find(m => m.name === moduleName);
                                 return mod && Array.isArray(mod.controls)
                                      && mod.controls.find(x => x.name === ctrl.name);
                             };
-                            const findIdx = () => ((findCtrl() || {}).options || [])
-                                                   .findIndex(o => o.name === want);
                             await refetchState();
-                            let idx = findIdx();
+                            const idx = ((findCtrl() || {}).options || [])
+                                          .findIndex(o => o.name === file);
                             if (idx < 0) {
-                                await new Promise(r => setTimeout(r, 600));
-                                await refetchState();
-                                idx = findIdx();
-                            }
-                            if (idx < 0) {
-                                // Downloaded, but the device has not published it. Say so: the file IS
-                                // on the device, so re-opening the picker will offer it.
-                                alert(want + " was downloaded but is not in the palette list yet - "
-                                      + "reopen the picker to select it.");
+                                // Only reachable if the device accepted the write and then did not
+                                // list the file, which is a device-side fault rather than a wait.
+                                alert("could not select " + file + ": the device saved it but does not list it");
                                 return;
                             }
                             const fresh = document.querySelector(
@@ -7118,6 +7111,8 @@ function fmMountEditor(host, relPath, opts = {}) {
     // the check while the first request is still in flight. Saves are serialized rather than
     // dropped, because the second trigger may carry newer keystrokes than the first.
     let saving = null;
+    /// The file's text as it was LOADED, for the no-op fork check in save().
+    let loadedText = null;
     const save = () => {
         if (body.readOnly || !dirty || !path) return Promise.resolve();
         saving = (saving || Promise.resolve()).then(async () => {
@@ -7125,6 +7120,17 @@ function fmMountEditor(host, relPath, opts = {}) {
             const saved = body.value;                       // what THIS request writes
             status.textContent = "saving…";
             const dest = savePath ? savePath(path) : path;
+            // A FORK THAT CHANGES NOTHING IS NOT A FORK. When the destination differs from the file
+            // that was read, saving creates a user copy that shadows the shipped one forever: every
+            // later library update becomes invisible behind it. If the text is byte-identical to
+            // what was read, there is nothing to shadow it WITH, so write nothing and let the
+            // shipped copy keep winning. Opening a script and pressing Save is otherwise enough to
+            // pin it at today's version, which is the trap this whole mechanism exists to avoid.
+            if (dest !== path && loadedText !== null && saved === loadedText) {
+                status.textContent = "unchanged";
+                setDirty(false);
+                return;
+            }
             const r = await fmSaveFrom(body, dest);
             status.textContent = r.message;
             // A failed write (no space, a vanished path) must not be silent. The modal shows it on
@@ -7185,6 +7191,9 @@ function fmMountEditor(host, relPath, opts = {}) {
         }
         const r = await fmLoadInto(body, path, size, ac.signal);
         if (r.aborted || ac !== loadAbort) return;   // a newer load started: that one owns the pane
+        // What arrived, so save() can tell a real edit from an untouched file. Only used when the
+        // save destination differs from the read path (a factory script being forked).
+        loadedText = body.value;
         body.readOnly = r.readOnly;
         saveBtn.disabled = r.readOnly;
         paintHighlight();          // the file just arrived: paint what it says

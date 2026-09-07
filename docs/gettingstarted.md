@@ -85,7 +85,7 @@ Leave **Release** and **Firmware** at their suggested values (the newest stable
 build, and the firmware that matches your device). Tick **Erase chip first** only
 if you're starting clean, switching firmware, or updating a 4 MB classic board
 (esp32 / wrover / eth) from a release before v4.0. That last update must erase:
-its partition layout changed ([MIGRATING](../MIGRATING.md)), and if the device already holds
+its partition layout changed ([MIGRATING](MIGRATING.md)), and if the device already holds
 config you care about, back it up first ("Back up a device's config first" on the
 installer page): erasing wipes WiFi credentials and all settings, and the backup
 brings them back after the flash (its report lists anything it could not carry).

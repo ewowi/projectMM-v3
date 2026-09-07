@@ -273,7 +273,39 @@ static constexpr uint8_t kDepthSlot = kCtrlBytes + kMaxSysVars * kSysVarBytes;
 /// stack and the rest of the render path need.
 static constexpr uint8_t kMaxCallDepth = 32;
 
-static constexpr uint8_t kArenaBytes  = kCtrlBytes + kMaxSysVars * kSysVarBytes + 1;   // +1: kDepthSlot
+/// WHERE A SCRIPT CALL'S ARGUMENTS ARE PASSED, and why they are not passed in the frame.
+///
+/// Each function opens its OWN frame (`a.prologue`), and a frame slot is addressed off the current
+/// frame pointer: on Xtensa through the windowed ABI's `entry a1, N`. So a caller physically cannot
+/// store into the slot the callee will read, and the obvious design (stage into the callee's
+/// locals) is not expressible on the target that matters most.
+///
+/// The ARENA is what both activations share: every function already holds its pointer (kArg4), so
+/// an argument block here costs no new register, no change to any call sequence, and in particular
+/// leaves Xtensa's `call8` untouched, which is the most defect-prone code in this project.
+///
+/// ONE block, not one per depth, because the CALLEE COPIES ITS ARGUMENTS INTO ITS OWN FRAME as its
+/// first act. The block is therefore live only across the call instruction itself, and the two
+/// cases that look dangerous both hold: in `f(g(x))` the inner call has returned (and its block is
+/// dead) before the outer one writes; and in recursion the callee has already copied out before it
+/// writes the block for the call it makes. Copy-at-entry is what buys the single block, so it is a
+/// requirement of this design rather than an optimization of it.
+static constexpr uint8_t kMaxScriptArgs  = 4;     // per call; a helper wanting more wants an array
+static constexpr uint8_t kScriptArgBytes = 4;     // one machine word, as a frame slot is
+/// ALIGNED to a 4-byte boundary, because these are 32-bit slots: kDepthSlot is a single byte, so
+/// the next free address is odd, and a word store there is unaligned. Xtensa faults on that, and a
+/// misaligned word is a silently wrong value everywhere else.
+static constexpr uint8_t kScriptArgBase  = static_cast<uint8_t>((kDepthSlot + 1 + 3) & ~3);
+
+/// The arena byte offset of argument `i`.
+constexpr uint8_t scriptArgOffset(uint8_t i) {
+    return static_cast<uint8_t>(kScriptArgBase + i * kScriptArgBytes);
+}
+
+/// Sized from the argument block's own END, not from a sum of the parts: the block is ALIGNED up
+/// from kDepthSlot, so adding the pieces underestimates it by the padding and the last argument
+/// would sit past the arena the host allocates.
+static constexpr uint8_t kArenaBytes  = kScriptArgBase + kMaxScriptArgs * kScriptArgBytes;
 
 /// A name the HOST defines and the script only reads (`width`, `height`, `depth`). Reserved: a
 /// script cannot declare one, so the name means the same thing in every script (the `t` rule, one

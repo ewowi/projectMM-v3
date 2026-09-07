@@ -166,7 +166,11 @@ struct Parser {
     // Each function the class defined, with the IR index its body starts at. An IR index, not a byte
     // offset: the parser runs before lowering, so the byte an entry lands on is not known yet. The
     // emitter converts one to the other, which is the same seam a linker crosses.
-    struct FnMark { const char* name; uint8_t nameLen; uint16_t irStart; RetType ret; };
+    /// `params` is how many arguments the function declares. They live in the LOWEST frame
+    /// slots of its frame (0..params-1), which is what lets a caller stage arguments into them
+    /// with the same Spill the builtin path already uses: no backend calling convention changes,
+    /// and in particular Xtensa's windowed call8 sequence is untouched.
+    struct FnMark { const char* name; uint8_t nameLen; uint16_t irStart; RetType ret; uint8_t params; };
     FnMark             fns[kMaxEntryPoints] = {};
     uint8_t            fnCount = 0;
     /// What the function currently being parsed declared it returns, so a `return` can be
@@ -682,7 +686,36 @@ struct Parser {
                 if (std::strncmp(fns[i].name, lex.identBeg, lex.identLen) != 0) continue;
                 lex.advance();
                 if (!expect(Tok::LParen, "expected '(' after the function name")) return;
-                if (!expect(Tok::RParen, "a script function takes no arguments yet")) return;
+                // ARGUMENTS, evaluated into REGISTERS first and stored to the arena block only
+                // once they all are. The store cannot follow each argument, because evaluating a
+                // later one may itself contain a call (`paint(0, twice(21))`) whose own arguments
+                // go through the same block: writing as we go had the inner call overwrite the
+                // outer's first argument, and paint drew 21 where 0 belonged.
+                //
+                // Delaying the stores to the last possible moment is what makes ONE block enough:
+                // between the final store and the call there is nothing left to run.
+                const uint8_t want = fns[i].params;
+                VReg staged[kMaxScriptArgs] = {};
+                uint8_t got = 0;
+                while (lex.kind != Tok::RParen && lex.kind != Tok::End) {
+                    if (got > 0 && !expect(Tok::Comma, "expected ',' between arguments")) return;
+                    const VReg a = parseExpr();
+                    if (failed) return;
+                    if (got < want && got < kMaxScriptArgs) staged[got] = a;
+                    else freeTemp(a);
+                    got++;
+                }
+                if (!expect(Tok::RParen, "expected ')' to close the arguments")) return;
+                const uint8_t staging = got < want ? got : want;
+                for (uint8_t a = 0; a < staging && a < kMaxScriptArgs; a++) {
+                    emit({IrOp::StoreCtrl32, 0, staged[a], 0,0,0, scriptArgOffset(a), nullptr, {}});
+                    freeTemp(staged[a]);
+                }
+                if (got != want) {
+                    fail(got < want ? "too few arguments for this function"
+                                    : "too many arguments for this function");
+                    return;
+                }
                 // A call used as a VALUE takes what the callee returned. Refused when the callee
                 // declares void, since there is nothing to take and the script would otherwise
                 // read whatever the return register happened to hold.
@@ -1679,15 +1712,43 @@ struct Parser {
     /// Stage 1 emits it INLINE at the point the class body reaches it, which is what makes `tick()`
     /// the whole program while it is the only entry point. Real per-function frames arrive with the
     /// call support in this same step; this is the parse shape they will attach to.
-    bool parseFunctionBody() {
+    /// The parameter list, parsed BEFORE the function emits anything: the count decides how many
+    /// copy-out instructions its prologue needs, and inserting into the IR afterwards would shift
+    /// every index the spill pass and the call lowering rely on.
+    bool parseParams(uint8_t* paramsOut) {
         if (!expect(Tok::LParen,  "expected '(' after the function name")) return false;
-        if (!expect(Tok::RParen,  "expected ')': parameters arrive with typed members")) return false;
-        if (!expect(Tok::LBrace,  "expected '{' to open the function body")) return false;
-        // Each function starts with an empty local scope and ends with one, so `tick()` and
-        // `tick20ms()` in the same class each get the whole frame rather than sharing what the
-        // first one happened to leave. Stage 1 emits functions inline, which is exactly why this is
-        // needed: without it the second function's locals would stack on top of the first's.
+        // The locals must be cleared BEFORE the parameters are declared: they become locals 0..N-1
+        // of this function's frame, and a leftover from the previous function would push them up
+        // and leave the caller staging into the wrong slots.
         localCount = 0; slotHighWater = 0;
+        uint8_t params = 0;
+        while (lex.kind != Tok::RParen && lex.kind != Tok::End) {
+            if (params > 0 && !expect(Tok::Comma, "expected ',' between parameters")) return false;
+            // A parameter is declared like a variable, and its type is read the same way, so
+            // `int`/`byte`/`bool` all mean here what they mean anywhere else.
+            if (!atTypeKeyword()) { fail("expected a parameter type"); return false; }
+            const CtrlType t = currentType();
+            lex.advance();
+            if (lex.kind != Tok::Ident) { fail("expected a parameter name"); return false; }
+            if (localCount >= kMaxLocals) { fail("too many locals"); return false; }
+            if (params >= kMaxCallArgs) { fail("too many parameters"); return false; }
+            locals[localCount++] = {lex.identBeg, lex.identLen, slotHighWater, t};
+            slotHighWater++;
+            if (slotHighWater > slotsUsed) slotsUsed = slotHighWater;
+            params++;
+            lex.advance();
+        }
+        if (!expect(Tok::RParen,  "expected ')' to close the parameter list")) return false;
+        if (paramsOut) *paramsOut = params;
+        return true;
+    }
+
+    /// The body. Its parameters are already locals 0..N-1, declared by parseParams.
+    bool parseFunctionBody() {
+        if (!expect(Tok::LBrace,  "expected '{' to open the function body")) return false;
+        // Cleared above, BEFORE the parameters were declared, so they are in scope for the body:
+        // clearing here would discard them. Each function still starts with an empty scope, which
+        // is what stops one function's locals stacking on the next's.
         while (!failed && lex.kind != Tok::RBrace && lex.kind != Tok::End)
             if (!parseStatement()) return false;
         if (failed) return false;
@@ -1755,20 +1816,38 @@ struct Parser {
             // the wrong function, silently. Refused here, where a control name already is, so the
             // script author is told rather than the engine guessing.
             if (lex.identLen > kMaxEntryName) { fail("function name too long"); return false; }
-            fns[fnCount] = {lex.identBeg, static_cast<uint8_t>(lex.identLen),
-                            static_cast<uint16_t>(ir.count), ret};
+            // The NAME is captured before the SIGNATURE is parsed, since parsing moves the lexer,
+            // and the signature is parsed before anything is emitted: the parameter count decides
+            // how many copy-out instructions the prologue needs, and inserting into the IR after
+            // the fact would shift every index the spill pass and the call lowering rely on.
+            const char* const fnName = lex.identBeg;
+            const uint8_t fnNameLen = static_cast<uint8_t>(lex.identLen);
+            lex.advance();                       // the function name
+            uint8_t params = 0;
+            if (!parseParams(&params)) return false;
+            fns[fnCount] = {fnName, fnNameLen, static_cast<uint16_t>(ir.count), ret, params};
             curRet = ret;                        // every `return` below is checked against it
             // The IR carries the start INDEX; the lowering turns it into a byte offset.
             ir.fnIrStart[fnCount] = static_cast<uint16_t>(ir.count);
             ir.fnCount = static_cast<uint8_t>(fnCount + 1);
             fnCount++;
-            lex.advance();                       // the function name
             // Park the host arguments in this FUNCTION's frame. Read-only, so one store each, and
             // every later read is a Reload, which frees five registers for the body. Per function
             // rather than per program because each function owns its own frame now: a spill emitted
             // before the first prologue would write to a frame that does not exist yet.
             for (VReg v = 0; v < kFirstTemp; v++)
                 emit({IrOp::Spill, 0, v, 0,0,0, hostArgSlot(v), nullptr, {}});
+            // COPY THE ARGUMENTS OUT of the shared arena block into this function's own slots,
+            // before the body runs and so before it can make a call of its own. That copy is what
+            // lets ONE arena block serve every depth: see kScriptArgBase. It also has to happen
+            // here rather than lazily at each use, since a call in the middle of the body would
+            // overwrite the block the later uses would read.
+            for (uint8_t a = 0; a < params; a++) {
+                const VReg v = alloc();
+                emit({IrOp::LoadCtrl32, v, 0,0,0,0, scriptArgOffset(a), nullptr, {}});
+                emit({IrOp::Spill, 0, v, 0,0,0, a, nullptr, {}});
+                freeTemp(v);
+            }
             if (!parseFunctionBody()) return false;
             any = true;
         }

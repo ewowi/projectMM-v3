@@ -265,21 +265,36 @@ public:
     /// the seam holds POINTERS, so a local would dangle the moment this returned.
     void refreshLivePalettes() {
         liveCount_ = 0;
-        platform::fsList(moonlive::kScriptDir, [](const char* name, bool isDir, uint32_t, void* ctx) {
-            auto* self = static_cast<Drivers*>(ctx);
-            if (isDir || self->liveCount_ >= LivePalettes::kMax) return;
-            const size_t n = std::strlen(name);
-            if (n < 5 || std::strcmp(name + n - 4, moonlive::kPaletteExt) != 0) return;
-            // A bounded copy rather than snprintf("%s"): a name longer than the slot is TRUNCATED
-            // to fit, which is what a picker entry wants, and GCC cannot prove the %s form fits.
-            char* slot = self->liveNames_[self->liveCount_];
-            const size_t cap = sizeof(self->liveNames_[0]) - 1;
-            const size_t copy = n < cap ? n : cap;
-            std::memcpy(slot, name, copy);
-            slot[copy] = '\0';
-            self->livePtrs_[self->liveCount_] = self->liveNames_[self->liveCount_];
-            self->liveCount_++;
-        }, this);
+        // BOTH directories, user first, exactly as resolveScript() loads them: a `.mlp` the UI
+        // downloaded sits in the FACTORY directory, and scanning only the user one made every
+        // downloaded palette invisible. The picker then said "reopen the picker to select it" and
+        // reopening changed nothing, because the file was never going to be listed.
+        //
+        // User first matters for the dedupe below: editing a factory palette writes a second file
+        // of the same name to kScriptDir, and the two must appear as ONE entry, the user's.
+        const auto scan = [](const char* dir, void* ctx) {
+            platform::fsList(dir, [](const char* name, bool isDir, uint32_t, void* c) {
+                auto* self = static_cast<Drivers*>(c);
+                if (isDir || self->liveCount_ >= LivePalettes::kMax) return;
+                const size_t n = std::strlen(name);
+                if (n < 5 || std::strcmp(name + n - 4, moonlive::kPaletteExt) != 0) return;
+                // Already seen means the user directory carried it, and that copy SHADOWS this one
+                // (resolveScript prefers it), so the factory pass must not add a second row.
+                for (uint8_t i = 0; i < self->liveCount_; i++)
+                    if (std::strcmp(self->livePtrs_[i], name) == 0) return;
+                // A bounded copy rather than snprintf("%s"): a name longer than the slot is TRUNCATED
+                // to fit, which is what a picker entry wants, and GCC cannot prove the %s form fits.
+                char* slot = self->liveNames_[self->liveCount_];
+                const size_t cap = sizeof(self->liveNames_[0]) - 1;
+                const size_t copy = n < cap ? n : cap;
+                std::memcpy(slot, name, copy);
+                slot[copy] = '\0';
+                self->livePtrs_[self->liveCount_] = self->liveNames_[self->liveCount_];
+                self->liveCount_++;
+            }, ctx);
+        };
+        scan(moonlive::kScriptDir, this);
+        scan(moonlive::kFactoryScriptDir, this);
         // Alphabetical, because the picker MERGES this list with the built-ins by name and that
         // merge walks both in order. An unsorted list here would interleave wrongly.
         for (uint8_t i = 1; i < liveCount_; i++)
@@ -628,8 +643,15 @@ public:
         // read its controls, then destroys it): such a probe would take the seam and empty it on
         // its way out, and every `.mlp` vanished from the running picker. prepare() runs only on a
         // module the scheduler actually mounted, which is exactly the owner the seam wants.
+        const uint8_t hadLive = liveCount_;
         refreshLivePalettes();
         LivePalettes::set(livePtrs_, liveTags_, liveCount_);
+        // A CHANGED count needs the control rebuilt, not just the seam republished: `palette`'s
+        // maximum is baked in defineControls() as liveCount_ + kCount, so a palette downloaded
+        // while running was listed by the picker and then REFUSED with "value out of range",
+        // because the control still carried the old cap. A write reaches here through
+        // applyFileChanged() -> requestPrepareTree(), so this is where the new file first appears.
+        if (liveCount_ != hadLive) rebuildControls();
         // Re-resolve the active Layer from the bound container so a Layer that
         // was cleared and rebuilt via the API is picked up here (self-healing).
         // setLayer() pins a Layer directly and leaves effects_ null — skip then.

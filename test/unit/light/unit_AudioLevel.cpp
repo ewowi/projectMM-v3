@@ -1,11 +1,9 @@
 // @module AudioService
-// @also AudioVolumeEffect
 
 #include "doctest.h"
 #include "core/AudioLevel.h"
 #include "core/AudioService.h"
 #include "core/ModuleFactory.h"
-#include "light/effects/AudioVolumeEffect.h"
 #include "light/effects/AudioSpectrumEffect.h"
 
 #include <cmath>
@@ -167,20 +165,16 @@ TEST_CASE("AudioLevel: isqrt64 matches floor(sqrt) on a spread of values") {
 // null even with no mic (so a consumer added before the mic can't deref null).
 TEST_CASE("AudioService + audio effects are registered and createable (boot-loop guard)") {
     mm::ModuleFactory::registerType<mm::AudioService>("AudioService");
-    mm::ModuleFactory::registerType<mm::AudioVolumeEffect>("AudioVolumeEffect");
     mm::ModuleFactory::registerType<mm::AudioSpectrumEffect>("AudioSpectrumEffect");
 
     auto* mic = mm::ModuleFactory::create("AudioService");
     REQUIRE(mic != nullptr);
     CHECK(mic->role() == mm::ModuleRole::Service);
 
-    auto* vol = mm::ModuleFactory::create("AudioVolumeEffect");
     auto* spec = mm::ModuleFactory::create("AudioSpectrumEffect");
-    REQUIRE(vol != nullptr);
     REQUIRE(spec != nullptr);
 
     delete mic;
-    delete vol;
     delete spec;
 }
 

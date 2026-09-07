@@ -368,7 +368,7 @@ So the fix is scoped to the preview, and the open question is where travel is de
   fixture someone plugged in. The leanest thing that stops the lie.
 - **The light preset** — correct once two different heads run at once, but a preset is a
   *channel-role* layout today, and carrying physical travel widens what a preset means. Belongs
-  with the [fixture model](#fixture-model--moving-heads-beams-long-term), not before it.
+  with the [fixture model](#fixture-model-moving-heads-beams-long-term), not before it.
 
 **Positioning is 8-bit while the fixture offers 16.** The bench head has a fine channel for each
 axis ([light fixtures reference](../reference/light-fixtures.md)); both sit unused, so pan resolves
@@ -450,7 +450,7 @@ writes are sequential: for each output row, walk its source row once and emit `s
 each light's colour, then `memcpy` that finished row to the remaining `scale - 1` rows of the
 block. Same output, one pass through the destination in address order.
 
-### Sprite follow-ups (draw::sprite + FlyingToasters shipped; [spec + plan](../history/plans/Plan-20260827%20-%20Sprites%20and%20flying%20toasters.md))
+### Sprite follow-ups (draw::sprite + FlyingToasters shipped; spec + plan in the plans archive)
 
 Deliberately deferred when sprites landed: P4 PPA acceleration behind the same `draw::sprite`
 signature (the 2D-DMA blitter the WLED-MM-P4 world uses via LovyanGFX; ours would sit in the
@@ -826,3 +826,27 @@ The LED-driver increments **shipped**: increment 1 (RMT/WS2812B single-strand on
   I2S0 first.
 
 (The shared lane-driver scaffolding extraction — when a 3rd parallel backend lands — is tracked separately under [§ Extract shared lane-driver scaffolding](#extract-shared-lane-driver-scaffolding-when-the-3rd-parallel-backend-lands-deferred) above.)
+
+## Downloading a scripted palette can repoint the active one (2026-09-06)
+
+Found while testing the palette-download fixes. A `.mlp` that sorts BEFORE an already-installed one
+silently changes what the current selection points at: with `fire.mlp` active at index 60,
+downloading `beat-flash.mlp` re-sorts the scripted tail and index 60 becomes `beat-flash.mlp`. The
+stored value never moved; what it means did.
+
+[Palette.h](../../src/light/Palette.h) already reasons about exactly this and solves half of it. A
+palette selection is an index: it persists, it rides `seg[0].pal` over the WLED API, and Home
+Assistant renders `paletteNames` positionally, so scripted palettes sort AFTER the built-ins and the
+sixty built-in indices are fixed forever. What is not solved is the scripted tail among itself, and
+that tail now grows at runtime, which is what the download path made reachable.
+
+Nobody has reported it, and the blast radius is small: a rig with one scripted palette cannot hit it,
+and the value re-reads correctly the moment the user picks again. It matters most where a preset or
+an MQTT/HA automation stores the index and replays it later, which is the case where nobody is
+watching the LEDs when it changes.
+
+**What it would take:** persist the scripted palette by NAME alongside the index and re-resolve the
+index on load, so a stored selection survives a re-sort. `paletteScript` already holds the resolved
+file name for the editor, so the value exists; what is missing is using it as the authority when the
+list changes. The alternative, appending new scripts rather than sorting them, keeps indices stable
+but makes the picker unreadable as the list grows, which is the trade the sort was chosen over.

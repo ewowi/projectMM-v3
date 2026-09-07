@@ -1,3 +1,5 @@
+// Power: reads supply voltage and current from two analog pins, into readouts.
+
 class Power {
   int pinV = 5;
   int pinI = 6;

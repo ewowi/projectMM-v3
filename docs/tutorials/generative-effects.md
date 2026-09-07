@@ -388,5 +388,5 @@ before trusting it, because a test that passes on both is measuring nothing.
 ## Where to go next
 
 - **[Power functions](../moonmodules/light/power-functions.md)**: the catalog, with what each one costs and who calls it
-- **[Writing scripts](../moonmodules/light/writing-scripts.md)**: the MoonLive language reference
+- **[Writing scripts](https://github.com/MoonModules/projectMM/blob/main/moonlive/README.md)**: the MoonLive language reference
 - **[Effects](../moonmodules/light/effects.md)**: every effect in the tree, with its controls

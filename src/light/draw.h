@@ -1262,6 +1262,72 @@ inline void disc(const Canvas& cv, pos_t cx, pos_t cy, pos_t r, RGB c, lengthTyp
     }
 }
 
+/// A circle OUTLINE of a given stroke width, centered on the radius: `thickness` of one pixel
+/// (`kSubOne`) draws a one-pixel ring. Sub-pixel and antialiased like `disc`.
+///
+/// A shape of its own rather than two discs subtracted, and the difference is visible: subtracting
+/// leaves the INNER edge hard, because the cut-out disc's coverage is not blended, only removed. A
+/// ring drawn from its own distance band gets both edges antialiased, which is what lets a thin
+/// ring stay smooth while it grows.
+inline void ring(const Canvas& cv, pos_t cx, pos_t cy, pos_t r, pos_t thickness, RGB c,
+                 lengthType z = 0) {
+    if (r <= 0 || thickness <= 0) return;
+    const pos_t half = thickness / 2;
+    const lengthType x0 = toPixel(cx - r - half) - 1, x1 = toPixel(cx + r + half) + 1;
+    const lengthType y0 = toPixel(cy - r - half) - 1, y1 = toPixel(cy + r + half) + 1;
+    for (lengthType y = y0; y <= y1; y++) {
+        for (lengthType x = x0; x <= x1; x++) {
+            // sdCircle gives the distance to the circle's LINE (signed, negative inside). The ring
+            // is the band within `half` of that line, so its own distance is how far outside the
+            // band the pixel sits: |d| - half.
+            const int32_t d = sdCircle(toSub(x) + kSubOne / 2, toSub(y) + kSubOne / 2, cx, cy, r);
+            const int32_t off = (d < 0 ? -d : d) - half;
+            const uint8_t cov = coverage(off);
+            if (cov == 0) continue;
+            addPixel(cv, {x, y, z}, RGB{scale8(c.r, cov), scale8(c.g, cov), scale8(c.b, cov)});
+        }
+    }
+}
+
+/// A line with WIDTH and sub-pixel endpoints, antialiased along both edges and round-capped.
+///
+/// Distinct from `line` rather than an overload of it, because they answer different questions.
+/// `line` walks whole pixels by Bresenham and is the cheap one, right for a wire-frame or a
+/// scribble. This one places a stroke of real width at a fractional position, which is what a clock
+/// hand or a spoke needs: on a 16-pixel panel a Bresenham hand jumps a whole pixel at a time and
+/// reads as broken, where this moves smoothly because brightness carries the fraction.
+inline void strokeLine(const Canvas& cv, pos_t x0, pos_t y0, pos_t x1, pos_t y1, pos_t thickness,
+                       RGB c, lengthType z = 0) {
+    if (thickness <= 0) return;
+    const pos_t half = thickness / 2;
+    const int64_t dx = static_cast<int64_t>(x1) - x0, dy = static_cast<int64_t>(y1) - y0;
+    const int64_t lenSq = dx * dx + dy * dy;
+    // A zero-length stroke is a dot, which is what a fully retracted hand should still draw.
+    if (lenSq == 0) { disc(cv, x0, y0, half, c, z); return; }
+
+    const pos_t loX = (x0 < x1 ? x0 : x1) - half, hiX = (x0 > x1 ? x0 : x1) + half;
+    const pos_t loY = (y0 < y1 ? y0 : y1) - half, hiY = (y0 > y1 ? y0 : y1) + half;
+    for (lengthType y = toPixel(loY) - 1; y <= toPixel(hiY) + 1; y++) {
+        for (lengthType x = toPixel(loX) - 1; x <= toPixel(hiX) + 1; x++) {
+            const pos_t px = toSub(x) + kSubOne / 2, py = toSub(y) + kSubOne / 2;
+            // Project the pixel onto the segment, CLAMPED to its ends: without the clamp the
+            // stroke would run on along the infinite line, and the two caps would be square rather
+            // than round. `t` is the position along the segment, 0..kSubOne.
+            const int64_t vx = static_cast<int64_t>(px) - x0, vy = static_cast<int64_t>(py) - y0;
+            int64_t t = ((vx * dx + vy * dy) * kSubOne) / lenSq;
+            if (t < 0) t = 0;
+            if (t > kSubOne) t = kSubOne;
+            const pos_t nx = static_cast<pos_t>(x0 + ((dx * t) >> kSubShift));
+            const pos_t ny = static_cast<pos_t>(y0 + ((dy * t) >> kSubShift));
+            // Distance to that nearest point, then the same edge rule every shape here uses:
+            // sdCircle with the stroke's half-width IS "how far outside the stroke am I".
+            const uint8_t cov = coverage(sdCircle(px, py, nx, ny, half));
+            if (cov == 0) continue;
+            addPixel(cv, {x, y, z}, RGB{scale8(c.r, cov), scale8(c.g, cov), scale8(c.b, cov)});
+        }
+    }
+}
+
 /// The volumetric form: a filled sphere, shaded the same way.
 ///
 /// Separate rather than a defaulted depth on `disc`, because the cost differs by an order: a sphere

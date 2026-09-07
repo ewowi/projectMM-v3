@@ -1,8 +1,10 @@
+// Sweep: drives four faders on a slow triangle, two of them inverted.
+
 class Sweep {
   int bpm = 8;
 
   void defineControls() {
-    addControl("bpm", bpm, 1, 60);
+    addControl("bpm", bpm, 1, 60); // how fast the sweep travels
   }
 
   void tick20ms() {

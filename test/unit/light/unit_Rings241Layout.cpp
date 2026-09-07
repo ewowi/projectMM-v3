@@ -97,3 +97,38 @@ TEST_CASE("outside in puts light 0 on the outer ring and the center LED last, ri
     CHECK(o == kTotal);
     CHECK(b[kTotal - 1] == a[0]);              // the center LED is the last light when wired outside in
 }
+
+// `angleFirst` says where light 0 of each ring sits, in degrees from the bottom. A disc is soldered
+// with its first LED wherever the builder started, so without it the image is fixed against the
+// hardware. The default of 0 must reproduce MoonLight's placement exactly, since that is what every
+// other test here pins.
+TEST_CASE("angleFirst moves the first light around the ring, and 0 leaves the disc where it was") {
+    mm::Rings241Layout plain;
+    const auto at0 = coordsOf(plain);
+
+    mm::Rings241Layout alsoZero;
+    alsoZero.angleFirst = 0;
+    CHECK(coordsOf(alsoZero) == at0);          // the default is not merely near MoonLight's, it IS it
+
+    // A quarter turn moves every ring's first light. The disc is symmetric, so the SET of
+    // coordinates barely changes; what moves is which index sits where, which is the point.
+    mm::Rings241Layout turned;
+    turned.angleFirst = 90;
+    const auto at90 = coordsOf(turned);
+    REQUIRE(at90.size() == at0.size());
+    CHECK_FALSE(at90 == at0);
+
+    // The center LED has no angle, so it cannot move however far the disc is turned.
+    CHECK(at90[0] == at0[0]);
+
+    // 359 is one degree short of a full turn, so the disc is nearly back where it started: the
+    // control stops at 359 because 360 IS 0 (the ring closes) and offering both invites the
+    // question of which one it is.
+    mm::Rings241Layout almost;
+    almost.angleFirst = 359;
+    const auto at359 = coordsOf(almost);
+    for (size_t i = 0; i < at0.size(); i++) {
+        CHECK(std::abs(int(at359[i].x) - int(at0[i].x)) <= 1);
+        CHECK(std::abs(int(at359[i].y) - int(at0[i].y)) <= 1);
+    }
+}

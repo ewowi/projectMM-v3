@@ -101,6 +101,7 @@ The classic 241-LED concentric-ring disc: nested rings of 1, 8, 12, 16, 24, 32, 
 
 - `scale` — overall radius scale (1–10).
 - `outside in`: light 0 on the outer ring, wired inward, instead of at the center wired outward. The direction around each ring is unchanged.
+- `angleFirst`: where light 0 of each ring sits, in degrees from the bottom (0-359), the same control [Ring](#ring) has. A disc is soldered with its first LED wherever the builder started, so this turns the image to match the hardware rather than re-wiring it. 0 is the unrotated placement.
 
 Origin: MoonLight · via [MoonLight](https://github.com/MoonModules/MoonLight/blob/main/src/MoonLight/Nodes/Layouts/L_MoonLight.h)
 

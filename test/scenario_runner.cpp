@@ -42,7 +42,6 @@
 #include "light/drivers/PreviewDriver.h"
 #include "core/SystemModule.h"
 #include "core/AudioService.h"
-#include "light/effects/AudioVolumeEffect.h"
 #include "light/effects/RadialSpectrumEffect.h"
 #include "light/effects/VuMetersEffect.h"
 #include "light/effects/BeatRipplesEffect.h"
@@ -248,7 +247,6 @@ static void registerScenarioTypes() {
     mm::ModuleFactory::registerType<mm::PreviewDriver>("PreviewDriver");
     mm::ModuleFactory::registerType<mm::SystemModule>("SystemModule");
     mm::ModuleFactory::registerType<mm::AudioService>("AudioService");
-    mm::ModuleFactory::registerType<mm::AudioVolumeEffect>("AudioVolumeEffect");
     mm::ModuleFactory::registerType<mm::RadialSpectrumEffect>("RadialSpectrumEffect");
     mm::ModuleFactory::registerType<mm::VuMetersEffect>("VuMetersEffect");
     mm::ModuleFactory::registerType<mm::BeatRipplesEffect>("BeatRipplesEffect");

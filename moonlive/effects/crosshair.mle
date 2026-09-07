@@ -4,9 +4,6 @@ class CrosshairEffect {
   byte bpm = 30;
   byte spread = 3;
 
-  int cx = 0; // where the sight sits, across
-  int cy = 0; // where the sight sits, down
-
   int dimensions() { return 2; }
 
   string tags() { return "💫"; }
@@ -16,15 +13,18 @@ class CrosshairEffect {
     addControl("spread", spread, 0, 20); // how thick the lines are
   }
 
-  void column() {
+  // The vertical line of the sight.
+  void column(int cx) {
     for (int y = 0; y < height; y = y + 1) { setRGB(y * width + cx, 200, 30, 0); }
   }
 
-  void row() {
+  // The horizontal one.
+  void row(int cy) {
     for (int x = 0; x < width; x = x + 1) { setRGB(cy * width + x, 0, 90, 200); }
   }
 
-  void center() {
+  // The bright cross where the two lines meet, `spread` lights along each arm.
+  void center(int cx, int cy) {
     for (int i = 0; i < spread + spread + 1; i = i + 1) {
       int d = i - spread;
       if (cx + d >= 0) { if (cx + d < width) { setRGB(cy * width + cx + d, 255, 255, 255); } }
@@ -34,10 +34,10 @@ class CrosshairEffect {
 
   void tick() {
     fill(0, 0, 0);
-    cx = scale(beat(bpm, t), width);
-    cy = scale(beat(bpm + 7, t), height);
-    column();
-    row();
-    center();
+    int cx = scale(beat(bpm, t), width);
+    int cy = scale(beat(bpm + 7, t), height);
+    column(cx);
+    row(cy);
+    center(cx, cy);
   }
 }

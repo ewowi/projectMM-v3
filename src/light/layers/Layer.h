@@ -751,7 +751,23 @@ inline void EffectBase::setTilt(nrOfLightsType index, uint8_t value) {
 inline void EffectBase::setZoom(nrOfLightsType index, uint8_t value) {
     effectSetChannel(layer(), index, layer()->fixtureChannels().zoom, value);
 }
+inline void EffectBase::setRotate(nrOfLightsType index, uint8_t value) {
+    effectSetChannel(layer(), index, layer()->fixtureChannels().rotate, value);
+}
+inline void EffectBase::setGobo(nrOfLightsType index, uint8_t value) {
+    effectSetChannel(layer(), index, layer()->fixtureChannels().gobo, value);
+}
 inline bool EffectBase::movable() const { return layer()->fixtureChannels().movable(); }
+inline bool EffectBase::hasBeam() const {
+    // Null-checked, unlike the accessors above, because this one is called from defineControls():
+    // /api/types and /api/modules build a PARENTLESS probe instance to read an effect's control set
+    // (ModuleFactory::registerType), and a bare layer() there dereferences null. An unparented
+    // effect has no fixture, so it has no beam.
+    const Layer* l = layer();
+    if (!l) return false;
+    const FixtureChannels& fc = l->fixtureChannels();
+    return fc.gobo != FixtureChannels::kAbsent || fc.rotate != FixtureChannels::kAbsent;
+}
 inline nrOfLightsType EffectBase::nrOfLights() const { return layer()->buffer().count(); }
 inline uint32_t EffectBase::elapsed() const { return layer()->elapsed(); }
 inline draw::Canvas EffectBase::canvas() {

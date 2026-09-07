@@ -203,6 +203,124 @@ inline bool resolveScript(const char* name, char* out, size_t outLen) {
     return true;
 }
 
+/// LINEAGE: the hash of the shipped copy a user's edit was forked FROM, kept beside the fork.
+///
+/// The fork itself cannot carry it. A script is user-facing text shown in the device's own editor,
+/// so a provenance line in the file would be visible, editable and lost on the first paste. A
+/// sidecar is the standard answer (a `.orig` next to a patched config), and hidden here for the
+/// same reason `/.moonlive` is: the File Manager does not show dot files unless asked.
+///
+/// It answers the one question the shadow marker cannot: has the SHIPPED copy moved since the fork
+/// was made? Without it, an edit and a stale leftover look identical forever, which is what let 29
+/// pre-`void tick()` copies sit on a bench P4 failing every compile with offsets into files nobody
+/// had written that day.
+inline void scriptLineagePath(const char* name, char* out, size_t outLen) {
+    std::snprintf(out, outLen, "%s/.%s.from", kScriptDir, name);
+}
+
+/// Record that the user's copy of `name` was forked from text hashing to `hash`.
+inline bool noteScriptLineage(const char* name, uint32_t hash) {
+    if (!name || !name[0]) return false;
+    char path[128];
+    scriptLineagePath(name, path, sizeof(path));
+    char text[16];
+    const int n = std::snprintf(text, sizeof(text), "%u", static_cast<unsigned>(hash));
+    return n > 0 && platform::fsWriteAtomic(path, text, static_cast<size_t>(n));
+}
+
+/// The hash a fork was made from, or false when no lineage was recorded (an older fork, or a script
+/// the user wrote themselves). Absent lineage means "cannot say", never "unchanged".
+inline bool scriptLineage(const char* name, uint32_t& out) {
+    if (!name || !name[0]) return false;
+    char path[128];
+    scriptLineagePath(name, path, sizeof(path));
+    char text[16] = {};
+    const int got = platform::fsRead(path, text, sizeof(text));
+    if (got <= 0) return false;
+    uint32_t v = 0;
+    for (int i = 0; i < got && text[i] >= '0' && text[i] <= '9'; i++)
+        v = v * 10u + static_cast<uint32_t>(text[i] - '0');
+    out = v;
+    return true;
+}
+
+/// True when the user's copy of `name` is HIDING a shipped one: both directories hold it, so the
+/// resolver above compiles the user's and every push to the factory copy is invisible. The binding
+/// says so in its status, because from outside the two cases look identical, and a stale user copy
+/// has twice been chased as a compiler bug: once as a control that never appeared, once as an
+/// old-syntax copy failing with offsets that matched nothing in the file just written.
+/// Record lineage for a just-written file, if it is a fork: a path in the user script directory
+/// naming a script the firmware also ships. Anything else (a config file, a user's own script, a
+/// write to the factory directory) is not a fork and is left alone.
+///
+/// Takes the WRITTEN path rather than a name, so the one caller is the write hook and no caller has
+/// to work out whether a write was a fork.
+inline void noteForkedFrom(const char* path) {
+    if (!path) return;
+    char prefix[64];
+    const int plen = std::snprintf(prefix, sizeof(prefix), "%s/", kScriptDir);
+    if (plen <= 0 || std::strncmp(path, prefix, static_cast<size_t>(plen)) != 0) return;
+    const char* name = path + plen;
+    if (!name[0] || std::strchr(name, '/') || name[0] == '.') return;   // nested, or our own sidecar
+
+    // A REVERT arrives here too: applyFileChanged fires on a delete as well as a write, and the
+    // fork is already gone by then. Drop the lineage with it, or a later fork of the same name
+    // would be compared against a hash from a fork that no longer exists.
+    char user[96];
+    std::snprintf(user, sizeof(user), "%s/%s", kScriptDir, name);
+    if (platform::fsSize(user) < 0) {
+        char side[128];
+        scriptLineagePath(name, side, sizeof(side));
+        platform::fsRemove(side);
+        return;
+    }
+
+    // Only when the fork is CREATED. Re-stamping on every save would mark the fork up to date with
+    // whatever the library holds at that moment, which silently erases the very thing the record
+    // exists to show: that the shipped copy moved while the user was not looking. Lineage is the
+    // point the fork BRANCHED from, and a branch point does not move.
+    uint32_t already = 0;
+    if (scriptLineage(name, already)) return;
+
+    char factory[96];
+    std::snprintf(factory, sizeof(factory), "%s/%s", kFactoryScriptDir, name);
+    const long size = platform::fsSize(factory);
+    if (size <= 0 || size > kScriptFileMax) return;                     // nothing shipped: not a fork
+    char* text = static_cast<char*>(platform::alloc(static_cast<size_t>(size) + 1));
+    if (!text) return;
+    const int got = platform::fsRead(factory, text, static_cast<size_t>(size) + 1);
+    if (got > 0) noteScriptLineage(name, scriptHash(text, static_cast<size_t>(got)));
+    platform::free(text);
+}
+
+/// True when the SHIPPED copy has changed since the user forked it: both files exist, a lineage
+/// was recorded, and the factory copy no longer hashes to what the fork was made from.
+///
+/// False when there is no lineage. An older fork, or a script the user wrote, cannot be compared,
+/// and claiming an update on a guess would send someone to discard work for nothing.
+inline bool scriptFactoryMovedOn(const char* name) {
+    uint32_t from = 0;
+    if (!scriptLineage(name, from)) return false;
+    char path[96];
+    std::snprintf(path, sizeof(path), "%s/%s", kFactoryScriptDir, name);
+    const long size = platform::fsSize(path);
+    if (size <= 0 || size > kScriptFileMax) return false;
+    char* text = static_cast<char*>(platform::alloc(static_cast<size_t>(size) + 1));
+    if (!text) return false;
+    const int got = platform::fsRead(path, text, static_cast<size_t>(size) + 1);
+    const bool moved = got > 0 && scriptHash(text, static_cast<size_t>(got)) != from;
+    platform::free(text);
+    return moved;
+}
+
+inline bool scriptShadowsFactory(const char* name) {
+    char path[96];
+    std::snprintf(path, sizeof(path), "%s/%s", kScriptDir, name);
+    if (platform::fsSize(path) < 0) return false;
+    std::snprintf(path, sizeof(path), "%s/%s", kFactoryScriptDir, name);
+    return platform::fsSize(path) >= 0;
+}
+
 /// The hash of `name`'s CURRENT text, without compiling it.
 ///
 /// Answers "has the file changed since I compiled it" for the cost of ONE read, which is what a

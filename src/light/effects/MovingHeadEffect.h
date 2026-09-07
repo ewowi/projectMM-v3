@@ -55,6 +55,18 @@ public:
     uint8_t panCenter  = 128;
     uint8_t tiltCenter = 128;
 
+    /// The beam itself, on a head that has these wheels. Both are raw fixture bytes rather than a
+    /// count of slots: a gobo channel is a range per pattern on most heads and every model splits
+    /// it differently, so only the fixture's manual can say what a value selects. Left where they
+    /// are on a fixture without the channel, and invisible on a rig that has neither.
+    uint8_t gobo   = 0;
+    uint8_t rotate = 0;
+    /// Change gobo on a bass hit rather than holding one pattern all night, the one thing a static
+    /// value cannot do. Idea from MoonLight's Troy1 Move, which rolls a new pattern on a kick and
+    /// then refuses to roll again for a few seconds: without that hold a busy track strobes through
+    /// patterns too fast to read as anything.
+    bool goboOnBeat = false;
+
     /// Move and light with the music: the beam swings wider as the room gets louder, each head
     /// brightens on its own frequency band, and a beat kicks the whole rig. Silence holds it still,
     /// which is what makes the mode read as reactive rather than merely animated.
@@ -69,12 +81,27 @@ public:
         controls_.addControl("panCenter", panCenter, 0, 255);
         controls_.addControl("tiltCenter", tiltCenter, 0, 255);
         controls_.addControl("audioReactive", audioReactive);
+        // Offered only where a head carries the wheels: on an LED strip, or a head without them,
+        // the writes are no-ops and the sliders would be three controls that do nothing.
+        controls_.addControl("gobo", gobo, 0, 255);
+        controls_.addControl("rotate", rotate, 0, 255);
+        controls_.addControl("goboOnBeat", goboOnBeat);
+        const bool noBeam = !hasBeam();
+        const uint8_t last = controls_.count();
+        controls_.setHidden(last - 3, noBeam);   // gobo
+        controls_.setHidden(last - 2, noBeam);   // rotate
+        controls_.setHidden(last - 1, noBeam);   // goboOnBeat
     }
 
     void prepare() override {
         pan_ = BeatPhase{};
         tilt_ = BeatPhase{};
         beatDecay_ = 0;
+        // The rolled gobo starts from the slider, so a rig comes back on the pattern the user
+        // chose rather than whatever a beat left behind before the last restart.
+        goboNow_ = gobo;
+        goboHold_ = 0;
+        beatCount_ = 0;
     }
 
     void tick() MM_NONBLOCKING override {
@@ -103,9 +130,30 @@ public:
 
         // A beat widens the sweep and flares the color, then decays over ~20 frames. Without the
         // decay a kick is a single-frame flicker that no eye can follow.
-        if (live && audio->level > audio->levelSmoothed + kBeatMargin) beatDecay_ = 255;
+        const bool beat = live && audio->level > audio->levelSmoothed + kBeatMargin;
+        if (beat) beatDecay_ = 255;
         else if (beatDecay_ > kBeatDecayStep) beatDecay_ = static_cast<uint8_t>(beatDecay_ - kBeatDecayStep);
         else beatDecay_ = 0;
+
+        // A beat rolls a new gobo, but only after a HOLD: a pattern needs a few seconds on screen
+        // to read as a pattern, and a four-to-the-floor kick would otherwise change it four times a
+        // second into a flicker. `gobo` is the base the roll walks from, so the slider still says
+        // which family of patterns the rig is in.
+        if (goboOnBeat) {
+            if (beat && goboHold_ == 0) {
+                // hashInt of a BEAT COUNTER, not a stream RNG: two devices running the same rig
+                // must land on the same pattern, and a per-call RNG diverges forever the moment one
+                // of them renders an extra frame (math16.h, position-addressable randomness).
+                beatCount_++;
+                goboNow_ = static_cast<uint8_t>(gobo + (hashInt(beatCount_) & 0xE0));   // 8 coarse slots
+                goboHold_ = kGoboHoldFrames;
+            } else if (goboHold_ > 0) {
+                goboHold_--;
+            }
+        } else {
+            goboNow_ = gobo;      // the slider IS the value when the beat roll is off
+            goboHold_ = 0;
+        }
 
         // Loud music opens the beam to its full range, quiet keeps it tight. In silence the rig
         // HOLDS its aim rather than drifting.
@@ -118,6 +166,11 @@ public:
             const uint32_t hx = i % w, hy = (i / w) % h, hz = i / (w * h);
             const Formation f = shape(hx, hy, hz, w, h, d);
 
+
+            // The beam wheels, written every frame like any other role so a value the user changes
+            // takes effect at once. Both are no-ops on a fixture without the channel.
+            setGobo(i, goboNow_);
+            setRotate(i, rotate);
 
             // A frozen rig keeps its last aim: writing from a stopped phase would snap it back.
             if (!frozen) {
@@ -159,6 +212,9 @@ private:
     static constexpr uint16_t kBeatMargin    = 8;   // raw over smoothed = a transient
     static constexpr uint8_t  kBeatDecayStep = 12;  // ~20 frames from a kick back to rest
     static constexpr uint8_t  kDimFloor      = 40;  // a quiet band still shows its head
+    /// How long a rolled gobo stays put, in frames. About two seconds at 60 fps: long enough to
+    /// read the pattern, short enough that the rig still answers the music.
+    static constexpr uint8_t  kGoboHoldFrames = 120;
 
     /// One head's place in the formation: a phase offset into the sweep, and a direction.
     struct Formation { uint16_t phase; int32_t dir; };
@@ -235,6 +291,11 @@ private:
     BeatPhase pan_;
     BeatPhase tilt_;
     uint8_t   beatDecay_ = 0;
+    /// The gobo actually written, which is the slider until a beat rolls it. Held separate so the
+    /// slider keeps saying what the user chose rather than being overwritten by the roll.
+    uint8_t   goboNow_   = 0;
+    uint8_t   goboHold_  = 0;   // frames left before another beat may roll again
+    uint32_t  beatCount_ = 0;   // hashed for the roll: shared by every device on the same audio
 };
 
 } // namespace mm

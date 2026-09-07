@@ -1,9 +1,11 @@
+// Button: a wired push button, driving the switch1 control.
+
 class Button {
   int pin = 0;
   int last = 1;
 
   void defineControls() {
-    addControl("pin", pin, 0, 48);
+    addControl("pin", pin, 0, 48); // which GPIO the button is wired to
   }
 
   void tick20ms() {

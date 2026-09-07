@@ -22,7 +22,10 @@ function fnSource(name) {
     const at = src.indexOf(`function ${name}(`);
     assert.notEqual(at, -1, `${name} not found in app.js`);
     const from = src.startsWith("async ", at - 6) ? at - 6 : at;
-    const open = src.indexOf("{", at);
+    // The BODY's brace, not the first one after the name: a defaulted object parameter
+    // (`opts = {}`) puts a brace inside the parameter list, and matching from there returned the
+    // signature alone. Skip past the closing parenthesis first.
+    const open = src.indexOf("{", src.indexOf(")", src.indexOf("(", at)) );
     let depth = 0;
     for (let i = open; i < src.length; i++) {
         if (src[i] === "{") depth++;
@@ -168,4 +171,33 @@ test("a replaced card is found by POSITION, so a name collision still reaches th
               "and so must the index, for the same reason");
     assert.match(body.slice(replaceAt), /children\[index\]/,
                  "afterwards the slot is read at that index, not by a name that may not be its own");
+});
+
+// A FORK THAT CHANGES NOTHING IS NOT A FORK.
+//
+// Opening a shipped script and pressing Save (or clicking away, which also saves) used to write a
+// user copy byte-identical to the shipped one. That copy then shadows the library forever: every
+// later update is invisible behind a "change" the user never made. The editor therefore compares
+// what is on screen against what it loaded, and writes nothing when they match.
+//
+// Pinned on the SOURCE rather than through a DOM harness for the reason at the top of this file:
+// the guard lives inside fmMountEditor's closure, and what matters is that all three of its parts
+// are present, in the right order, against the right variable.
+test("saving an unmodified factory script does not create a shadowing copy", () => {
+    const editor = fnSource("fmMountEditor");
+
+    // The text as loaded is remembered, so an untouched file can be recognized.
+    assert.match(editor, /loadedText = body\.value/,
+                 "fmMountEditor must remember the text it loaded");
+
+    // The guard: only when the write goes somewhere other than the read (a fork), and only when
+    // nothing changed. Both conditions, or it would suppress a real save.
+    const guard = /dest !== path && loadedText !== null && saved === loadedText/;
+    assert.match(editor, guard, "the no-op fork guard must test destination AND content");
+
+    // It must sit BEFORE the write, or the file is created and the check is decoration.
+    const guardAt = editor.search(guard);
+    const writeAt = editor.indexOf("fmSaveFrom(body, dest)");
+    assert.ok(guardAt > -1 && writeAt > -1 && guardAt < writeAt,
+              "the guard must run before the write it prevents");
 });

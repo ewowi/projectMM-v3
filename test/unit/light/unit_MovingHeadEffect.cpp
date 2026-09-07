@@ -142,3 +142,91 @@ TEST_CASE("a 1 x N fixture chain still varies head by head") {
     CHECK(pans.size() > 1);
 }
 
+
+// --- the beam wheels ---------------------------------------------------------------------------
+//
+// A head's gobo and rotate channels were reachable by the PRESET model (FixtureChannels carries all
+// five motion roles, Drivers assigns their slots and Correction reads them back) but by no EFFECT:
+// EffectBase exposed setPan/setTilt/setZoom and nothing else, so the two wheels were plumbed end to
+// end with nobody able to write them. Ported from MoonLight's MovingHeads effects, which drive both.
+
+namespace {
+
+// A head with the beam wheels as well as aim: RGBW + pan + tilt + rotate + gobo, in the packing
+// order FixtureChannels::forEachMotionSlot defines (pan, tilt, zoom, rotate, gobo), with zoom
+// absent, which is what makes this a good test: the slots must close up around the missing role.
+constexpr uint8_t kBeamChannels = mm::FixtureChannels::kMotionBase + 4;
+
+mm::FixtureChannels beamRig() {
+    mm::FixtureChannels fc;
+    fc.pan    = mm::FixtureChannels::kMotionBase + 0;
+    fc.tilt   = mm::FixtureChannels::kMotionBase + 1;
+    fc.rotate = mm::FixtureChannels::kMotionBase + 2;
+    fc.gobo   = mm::FixtureChannels::kMotionBase + 3;
+    return fc;
+}
+
+}  // namespace
+
+TEST_CASE("a head's gobo and rotate carry the values the effect asks for") {
+    mm::Layouts layouts;
+    mm::GridLayout grid;
+    grid.width = 3;
+    grid.height = 1;
+    grid.depth = 1;
+    layouts.addChild(&grid);
+
+    mm::Layer layer;
+    layer.setLayouts(&layouts);
+    layer.setChannelsPerLight(kBeamChannels);
+    layer.setFixtureChannels(beamRig());
+
+    mm::MovingHeadEffect heads;
+    heads.gobo = 96;
+    heads.rotate = 200;
+    layer.addChild(&heads);
+    layer.applyState();
+
+    for (int i = 0; i < 3; i++) layer.tick();
+
+    auto& buf = layer.buffer();
+    REQUIRE(buf.count() == 3);
+    for (size_t i = 0; i < buf.count(); i++) {
+        const uint8_t* light = buf.data() + i * kBeamChannels;
+        CHECK(light[mm::FixtureChannels::kMotionBase + 3] == 96);    // gobo
+        CHECK(light[mm::FixtureChannels::kMotionBase + 2] == 200);   // rotate
+    }
+}
+
+// The orthogonality the whole role model rests on: the same effect on a fixture WITHOUT the wheels
+// writes no beam bytes rather than scribbling on whatever channel happens to sit there. A rig of
+// plain pan/tilt heads has its own meaning for the bytes past tilt, and a stray gobo write would
+// land on one of them.
+TEST_CASE("a head with no gobo channel is not written past its own channels") {
+    mm::Layouts layouts;
+    mm::GridLayout grid;
+    grid.width = 2;
+    grid.height = 1;
+    grid.depth = 1;
+    layouts.addChild(&grid);
+
+    mm::Layer layer;
+    layer.setLayouts(&layouts);
+    layer.setChannelsPerLight(kBeamChannels);   // room for four motion bytes
+    layer.setFixtureChannels(motionRig());      // but the fixture declares only pan + tilt
+
+    mm::MovingHeadEffect heads;
+    heads.gobo = 96;
+    heads.rotate = 200;
+    layer.addChild(&heads);
+    layer.applyState();
+
+    for (int i = 0; i < 3; i++) layer.tick();
+
+    auto& buf = layer.buffer();
+    for (size_t i = 0; i < buf.count(); i++) {
+        const uint8_t* light = buf.data() + i * kBeamChannels;
+        CHECK(light[mm::FixtureChannels::kMotionBase + 2] == 0);
+        CHECK(light[mm::FixtureChannels::kMotionBase + 3] == 0);
+    }
+}

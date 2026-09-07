@@ -1,5 +1,4 @@
-// Temperature: a physical color ramp from deep blue through white to amber, the way a heated
-// object actually changes color. Slide `kelvin` to move the whole palette along that curve.
+// Temperature: the color a heated object glows, from deep blue through white to amber.
 
 class Temperature {
   byte kelvin = 128;

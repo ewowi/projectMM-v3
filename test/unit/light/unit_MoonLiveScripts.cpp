@@ -451,8 +451,15 @@ TEST_CASE("every compile error fits the status line whole, its position included
     }
     INFO("longest diagnostic is " << longest << " chars");
     CHECK(longest >= 40);              // a control: a parse that found nothing would pass silently
-    // " @" + up to 5 digits + the terminator, against the buffer MoonLiveScript declares.
-    CHECK(longest + 8 <= mm::moonlive::MoonLiveScript::kMaxStatus);
+    // The shadow marker and its ": " in front, then " @" + up to 5 digits + the terminator, against
+    // the buffer MoonLiveScript declares. The marker is in the budget because it prefixes the
+    // longest message on the day a stale user copy fails, which is exactly when the offset matters.
+    // The LONGER of the two marks: the stale one prefixes exactly when a stale user copy fails,
+    // which is the case the offset matters most in.
+    const size_t shadow = std::strlen(mm::moonlive::MoonLiveScript::kShadowMark);
+    const size_t stale  = std::strlen(mm::moonlive::MoonLiveScript::kStaleMark);
+    const size_t mark = (stale > shadow ? stale : shadow) + 2;
+    CHECK(longest + mark + 8 <= mm::moonlive::MoonLiveScript::kMaxStatus);
     (void)longestText;
 }
 
