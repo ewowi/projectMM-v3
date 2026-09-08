@@ -1,0 +1,69 @@
+# projectMM in a container: the desktop firmware, which is the whole system without an ESP32.
+#
+#   docker compose up -d          start it, in the background
+#   docker compose logs -f        watch it
+#   docker compose down           stop it (the volume, and your config, survive)
+#
+# Then open http://localhost:8081/.
+#
+# Everything worth changing is one line, marked CHANGE ME.
+
+services:
+  projectmm:
+    build: .
+    # The released binary is amd64 only, so this line is REQUIRED on an arm64 host (an Apple-silicon
+    # Mac, an ARM server). Without it compose builds for the host's own architecture and the
+    # container dies with "rosetta error: failed to open elf" the moment it starts. It is harmless
+    # on an amd64 host, where it is what would have happened anyway. It goes when the release grows
+    # an arm64 Linux build.
+    platform: linux/amd64
+    # Or, once images are published, drop `build:` and use one of these instead:
+    #   image: ghcr.io/moonmodules/projectmm:latest    # the rolling prerelease
+    #   image: ghcr.io/moonmodules/projectmm:4.0.0     # a fixed version
+    container_name: projectmm
+
+    ports:
+      # CHANGE ME: the port YOU open in the browser is the left one. 8081 rather than 8080 so a
+      # container never fights a projectMM already installed on the machine. The right side is the
+      # port inside the container and does not change: containers do not share a port space, so
+      # several instances can all listen on 8080 internally with different left-hand numbers.
+      - "8081:8080"
+
+    volumes:
+      # Config, presets and scripts. Everything the app writes lands in /data/projectMM, so this one
+      # mount is the whole of its state: remove it and a restart comes up factory-fresh.
+      - projectmm-data:/data
+
+    # The container has no browser to open, and an unknown argument is a hard error rather than
+    # something ignored, so this is the one flag worth passing by default. The other is --port,
+    # which only matters under host networking (see the bottom of this file).
+    command: ["--no-browser"]
+
+    # NAMING an instance happens in the UI (System > deviceName), not on the command line: it is
+    # persisted state, so it lives in the volume above and survives a restart. It is not a hostname
+    # either, because the desktop build advertises no mDNS. Instances address each other by IP,
+    # which is what the network drivers take.
+
+    restart: unless-stopped
+
+    # CPU is the real limit when running SEVERAL instances, and the reason is worth knowing: the
+    # desktop build renders as fast as the machine allows (measured at ~83,000 fps in a container),
+    # because nothing paces it the way an LED refresh paces a board. One instance therefore takes a
+    # whole core, and three take three. Uncomment to cap it; 0.5 is ample for output over the
+    # network, where the wire rate is what actually matters.
+    # deploy:
+    #   resources:
+    #     limits:
+    #       cpus: "0.5"
+
+    # For DISCOVERY and BROADCAST output, replace the `ports:` block above with host networking:
+    #
+    #   network_mode: host
+    #
+    # Unicast Art-Net (UDP 6454), DDP (4048) and E1.31 (5568) reach a fixture perfectly well through
+    # the ordinary port mapping above; it is broadcast and multicast that a bridge network does not
+    # carry. With host networking there is no port mapping, so add `--port 8081` to `command:` above to
+    # keep clear of anything already on 8080.
+
+volumes:
+  projectmm-data:

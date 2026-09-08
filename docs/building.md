@@ -102,6 +102,57 @@ Every host needs [uv](https://docs.astral.sh/uv/), CMake 3.20+, and a C++20 comp
 
   Build and test from a **Developer PowerShell for VS 2022** (Start Menu → "x64 Native Tools…") so `cl.exe` and the SDK paths are on `PATH`. The default CMake generator on Windows is Visual Studio multi-config, so `projectMM.exe` lands at `build/windows/Release/projectMM.exe` and `mm_scenarios.exe` at `build/windows/test/Release/`. `build_desktop.py` and `run_scenario.py` look in both the `Release/` subdir and the build root, so Ninja (single-config) also works if preferred.
 
+### Docker
+
+The desktop build runs in a container, which is the whole system without an ESP32: same effect
+pipeline, same web UI, same driver stack, driving real fixtures over Art-Net, DDP and E1.31.
+
+```sh
+docker compose up -d      # then open http://localhost:8081/
+docker compose logs -f
+docker compose down       # stops it; the volume, and your config, survive
+```
+
+Or from the published image, one per release:
+
+```sh
+docker run -d --name projectmm -p 8081:8080 -v projectmm:/data \
+  ghcr.io/moonmodules/projectmm:latest
+```
+
+`:latest` follows the rolling prerelease, the same build the installer page offers; a version tag
+like `:4.0.0` pins one. Images are published by the release workflow from the same `.deb` that
+release ships, so the image and the binary are the same build.
+
+**Upgrading preserves everything.** The image holds only the binary and all state lives in the
+volume, so `docker compose pull && docker compose up -d` keeps settings, presets, scripts and the
+device's identity. Only `docker compose down -v` wipes it, and only a mounted volume is preserved
+at all: a bare `docker run` with no `-v` loses its state when the container goes.
+
+| | |
+|---|---|
+| **Config** | `/data/projectMM/.config/` in the volume, `XDG_DATA_HOME=/data` |
+| **Identity** | `/data/projectMM/.config/identity`, generated on first run |
+| **Logs** | stdout, so `docker logs` |
+| **UI** | container port 8080; the compose file publishes it on 8081 so it never fights a native install |
+| **Output** | Art-Net UDP 6454, DDP 4048, E1.31 5568, all outbound |
+| **Capabilities** | none; it binds its port as an ordinary process |
+
+**When host networking is needed.** Unicast output to a fixture works over ordinary bridge
+networking. Discovery and the broadcast or multicast output modes do not cross a bridge, so those
+want `network_mode: host` (or an L2 CNI on Kubernetes). With host networking there is no port
+mapping, so pass `--port 8081` in `command:` to stay clear of anything already on 8080.
+
+**Several instances** run side by side with no conflict: each container has its own port space, so
+they all listen on 8080 internally with different published ports, and each generates its own
+identity so they are distinguishable on the network. CPU is the practical limit rather than memory
+(measured at ~5 MB and about one core each, since the desktop build renders as fast as it is
+allowed); cap it with `cpus:` in compose when running a fleet.
+
+**amd64 only** for now: the release ships no arm64 Linux binary. On an Apple-silicon Mac or an ARM
+server the compose file's `platform: linux/amd64` runs it under emulation, which works but is
+slower than native.
+
 ## ESP32
 
 The ESP32 target uses ESP-IDF directly, not the Arduino framework.

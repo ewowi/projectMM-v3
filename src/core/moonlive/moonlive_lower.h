@@ -141,7 +141,11 @@ size_t lowerWith(IrProgram& ir, uint8_t* out, size_t cap, const RegBudget* squee
     // function whether or not it returns early, because the label is what closeFn binds; unused
     // ones bind and emit nothing. Not shared with tooDeep: that one only exists when the script
     // calls, and a return needs an exit either way.
-    LabelId fnExit[kMaxIrEntries];
+    // Zero-initialized, though only the first `fnCount` entries are ever read: GCC 14 cannot see
+    // that bound across the lambdas below and reports a maybe-uninitialized use under -Werror,
+    // where GCC 16 and clang stay quiet. A compiler-version difference is not worth an exception,
+    // and the initializer costs nothing on a cold path.
+    LabelId fnExit[kMaxIrEntries] = {};
     for (uint8_t f = 0; f < ir.fnCount; f++) fnExit[f] = a.newLabel();
     // Which function is being emitted, so a Ret knows which exit is its own. -1 until the first
     // function opens: a function-less program (the hand-built IR the codegen tests use) has no

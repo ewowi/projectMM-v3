@@ -1,0 +1,182 @@
+# TEMPORARY: a full end-to-end rehearsal of a release, as a PRERELEASE.
+#
+# Why this exists. The real release workflow cannot be rehearsed from a branch: when its tag
+# resolves to `latest` it force-pushes that tag and deletes the `latest` release, which the web
+# installer and the OTA update badge both read. Running it from a feature branch would hand every
+# updating user a branch build.
+#
+# So this does the whole thing under a different name: build the Linux desktop package, build a
+# container image from that exact .deb, push the image, pull it back and prove it serves, then
+# attach the artifacts to a PRERELEASE. Publicly visible, so the person who asked for the container
+# can test it, and reachable by no device: the stable update check reads `/releases/latest` (newest
+# non-prerelease) and the dev channel reads `/releases/tags/latest` (a specific tag), so neither
+# sees a prerelease under its own tag. Delete it when you are done.
+#
+# DELETE THIS FILE once release.yml's publish-container job has run for real on main. It exists to
+# de-risk that first run, not to become a second way of releasing.
+#
+# It never touches the `latest` tag or any vX.Y.Z tag.
+name: container test (temporary, prerelease)
+
+# PUSH on this one branch, plus manual. The push trigger is what makes it runnable at all: a
+# `workflow_dispatch` workflow is addressable only once its file sits on the DEFAULT branch, because
+# GitHub resolves the name you dispatch against main, so dispatching this from its own branch fails
+# with a 404 and no Run button appears. A push trigger has no such requirement, and this is how
+# `moonbase-test-release.yml` was run for the MoonBase test releases.
+#
+# Scoped to `docker-container` so it cannot follow the code onto main: this file is deleted once
+# release.yml's publish-container job has run for real, and until then the branch name IS the guard.
+# `workflow_dispatch` stays for a re-run without an empty commit, and starts working once main has
+# the file.
+on:
+  push:
+    branches:
+      - docker-container
+  workflow_dispatch:
+
+jobs:
+  container-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write     # the prerelease and its own `container-test` tag; it moves no other
+      packages: write     # push the image to ghcr.io
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          # compute_version.py counts commits since the last v* tag, as release.yml does.
+          fetch-depth: 0
+
+      - uses: astral-sh/setup-uv@v3
+
+      # The same packaging step release.yml's build-linux runs, so the .deb under test is built the
+      # way a released one is rather than by a path that exists only here.
+      #
+      # `--tag latest`, NOT `--tag container-test`: compute_version maps `latest` to the rolling
+      # prerelease channel and treats every other tag as stable, carrying it through as the version
+      # verbatim. So a made-up tag becomes a made-up version, and dpkg-deb rejects it outright, since
+      # a Debian version must start with a digit. `latest` yields the real `<core>-dev.<N>` a rolling
+      # release builds, which is also the truer rehearsal. What isolates this run is the IMAGE tag
+      # and the RELEASE tag, both `container-test` and both set below.
+      - name: Build + package Linux x64
+        id: pkg
+        run: |
+          set -euo pipefail
+          V=$(uv run python moondeck/build/compute_version.py --tag latest)
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          uv run moondeck/ci/package_desktop.py --version "$V"
+          ls -la dist/
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Lowercase, because a registry path must be and the org is not.
+      - name: Resolve image name
+        id: img
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "name=ghcr.io/$(echo "$REPO" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      # Byte-for-byte the Dockerfile release.yml writes: a rehearsal of a different file would
+      # prove nothing about the one that ships.
+      - name: Write the release Dockerfile
+        run: |
+          set -euo pipefail
+          deb=$(ls dist/projectmm_*_amd64.deb | head -1)
+          test -n "$deb"
+          mkdir -p ctx && cp "$deb" ctx/projectmm.deb
+          cat > ctx/Dockerfile <<'DOCKERFILE'
+          FROM debian:trixie-slim AS fetch
+          COPY projectmm.deb /tmp/projectmm.deb
+          RUN dpkg-deb -x /tmp/projectmm.deb /rootfs
+          FROM gcr.io/distroless/cc-debian13
+          COPY --from=fetch /rootfs/usr/bin/projectMM /usr/bin/projectMM
+          ENV XDG_DATA_HOME=/data
+          VOLUME /data
+          EXPOSE 8080
+          ENTRYPOINT ["/usr/bin/projectMM"]
+          DOCKERFILE
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: ctx
+          platforms: linux/amd64
+          push: true
+          # `container-test` only: never `latest`, never a version tag. This image is a rehearsal
+          # artifact and must not be mistaken for a release.
+          tags: ${{ steps.img.outputs.name }}:container-test
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.description=TEMPORARY container-publishing rehearsal, not a release
+
+      # The point of the whole workflow: pull what was pushed and prove it SERVES, rather than
+      # trusting that a successful push means a working image.
+      - name: Pull it back and check it answers
+        id: verify
+        run: |
+          set -euo pipefail
+          img="${{ steps.img.outputs.name }}:container-test"
+          docker rmi "$img" 2>/dev/null || true          # force a real pull, not the local cache
+          docker pull "$img"
+          docker run -d --name mmtest -p 8080:8080 -v mmtest-data:/data "$img"
+          ok=""
+          for i in $(seq 1 30); do
+            if curl -fsS -m 3 http://localhost:8080/api/modules/System >/dev/null 2>&1; then
+              ok="yes"; echo "UI answered after ~${i}s"; break
+            fi
+            sleep 1
+          done
+          test -n "$ok" || { echo "the image never served"; docker logs mmtest; exit 1; }
+          name=$(curl -fsS -m 5 http://localhost:8080/api/modules/System \
+            | python3 -c 'import sys,json; d=json.load(sys.stdin); v={c["name"]:c.get("value") for c in d["controls"]}; print(v.get("deviceName"), v.get("mac"))')
+          echo "  identity: $name"
+          echo "identity=$name" >> "$GITHUB_OUTPUT"
+          # The identity must have been generated and stored: that is what makes an instance
+          # distinguishable and what survives an upgrade.
+          docker run --rm -v mmtest-data:/data alpine cat /data/projectMM/.config/identity
+          docker rm -f mmtest
+
+      # A PRERELEASE carrying the same assets a real one would, so the whole path is exercised and
+      # anyone can try it: a draft would be invisible to people without write access, and the point
+      # of this rehearsal is that the person who asked for the container can test it too.
+      #
+      # Safe because of WHAT the update checks read. The stable channel fetches
+      # `/releases/latest`, which the GitHub API defines as the newest NON-prerelease, and the dev
+      # channel fetches `/releases/tags/latest`, a specific tag. Neither enumerates releases, so a
+      # prerelease under its own tag reaches no device. It does appear on the Releases page, which
+      # is the visibility we want.
+      - name: Prerelease with the artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: container-test
+          name: "container test ${{ steps.pkg.outputs.version }} (rehearsal, delete me)"
+          draft: false
+          prerelease: true
+          make_latest: "false"
+          fail_on_unmatched_files: true
+          files: |
+            dist/projectMM-linux-x64-*.tar.gz
+            dist/projectmm_*_amd64.deb
+          body: |
+            **Rehearsal, not a release.** Produced by `.github/workflows/container-test.yml` to
+            prove the container path before it ships in `release.yml`. It is marked a prerelease so
+            no device update check reaches it. Delete it when done.
+
+            The image is public, so anyone can run it without a GitHub login.
+
+            Container image, pulled back and verified serving in the same run:
+
+            ```
+            docker run -d -p 8081:8080 -v projectmm:/data \
+              ${{ steps.img.outputs.name }}:container-test
+            ```
+
+            Reported identity on first start: `${{ steps.verify.outputs.identity }}`
+            (generated and stored in the volume, so it survives an upgrade).

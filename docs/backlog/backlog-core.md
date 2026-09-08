@@ -15,6 +15,45 @@ timing test here uses: feed the packet, advance the clock explicitly, assert. Ra
 on PR #96 and deliberately not taken in that pass: it is pre-existing rather than part of that
 diff, and swapping a test's transport is a change that wants its own verification.
 
+## The desktop build advertises no mDNS (2026-09-06)
+
+`mdnsInit` on the desktop platform is a stub returning false, so a desktop instance is invisible to
+discovery: it neither announces itself nor answers `<name>.local`. On a board mDNS is what makes a
+device findable without knowing its address.
+
+Nice-to-have rather than blocking, because instances address each other by IP and that is what the
+network drivers take (`NetworkSendDriver`'s `ips` list). What it costs today is convenience: a
+container on a NAS has to be looked up rather than named, and a fleet of them cannot be enumerated
+the way a fleet of boards can.
+
+**What it costs:** a platform implementation per OS, which is the awkward part. macOS has Bonjour
+built in, Linux would want Avahi (a dependency the container deliberately does not have), and
+Windows has its own. A small self-contained responder is the alternative, since the announce side is
+a handful of multicast records and we do not need the resolver half.
+
+Worth revisiting if instance-to-instance sync grows: discovery is the difference between configuring
+a fleet by address and having it assemble itself.
+
+## The desktop build renders as fast as the machine allows (2026-09-06)
+
+Nothing paces the desktop render loop. On a board the LED refresh does; on desktop the loop runs
+flat out, measured at 83,000 fps in a container and ~110% of a core per instance. Memory is not the
+constraint (about 5 MB), so the practical ceiling on running several instances is one per core.
+
+That matters now the desktop build ships as a container: an array of instances is a plausible
+deployment (a fleet under test, several zones of a show), and today each one costs a whole core for
+frames nobody consumes. Nothing downstream benefits from more than the output rate: Art-Net, DDP and
+E1.31 all clock at their own wire rate, and the preview socket is throttled separately.
+
+**What it costs:** a target-fps control on the desktop platform, defaulting to something like 120,
+with the loop sleeping the remainder of each frame. The tick path already measures its own duration
+(`tickTimeUs`), so the sleep is a subtraction rather than new measurement. Roughly the shape of the
+`--port` flag: a desktop-only concern, invisible on a board.
+
+**Also worth knowing:** it would cut power draw on a single instance too, which matters for anyone
+running projectMM permanently on a NAS or a Pi.
+
+
 ## Distribution
 
 ### OTA upload refuses a normal client: the body must arrive within ~50 ms (2026-09-02)
@@ -1445,3 +1484,33 @@ the rows should be.
 
 Until then a list is user-populated, which is the honest behavior: the device knows the pin, the
 user knows what the button should do.
+
+## A desktop build reports firmware "unknown", so the update UI guesses from the browser (2026-09-06)
+
+Spotted on the container's Firmware card, which showed **Device: macOS arm64** while the image is
+Linux amd64. It was not reading the device: `desktopKeyForThisHost()` (`src/ui/install-picker.js`)
+and `desktopAssetPrefix()` (`src/ui/app.js`) both sniff `navigator.platform`, which describes the
+machine holding the BROWSER. The container makes it visible because there the two always differ, but
+the same card lies on any desktop instance opened from another machine.
+
+The download it offers is the failure mode worth naming: on a Mac the picker serves
+`projectMM-macos-arm64-*.dmg`, a real file that installs and runs perfectly, and updates the wrong
+computer. Nothing errors, and the device stays on its old build.
+
+**Root cause is one missing build flag.** `MM_FIRMWARE_NAME` already exists for exactly this
+(`build_info.h`, surfaced as the `firmware` control): `build_esp32.py` passes the variant key, and
+the desktop packaging passes nothing, so every published desktop binary falls through to the
+`"unknown"` default. `build_info.h:43` even records the assumption that made this safe, "local
+builds aren't published" — the container is a published desktop build, which is what retired it.
+
+**What it would take:** have `package_desktop.py` pass
+`-DMM_FIRMWARE_NAME="desktop-<os>-<arch>"` for the target it packages (the keys the picker's
+`DESKTOP_LABEL` map already lists), then delete both browser-sniffing functions and read the
+`firmware` control instead. `deviceFirmwareInfo()`'s `isDesktop` test (`firmware === "unknown"`)
+needs the same treatment, since a named desktop build no longer matches it: test the
+`desktop-` prefix. Local unflagged builds keep reporting `unknown`, where a guess is still better
+than nothing.
+
+Worth doing with the OTA path rather than alone: a desktop cannot install its own archive anyway, so
+the honest end state may be a card that names the platform and links the release rather than
+offering a Download button that only ever means "fetch a file and swap it by hand".

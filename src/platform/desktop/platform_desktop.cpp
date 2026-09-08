@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <random>      // the stored identity is generated once, see getMacAddress
+#include <fstream>
 #include <filesystem>
 #include <string>
 #ifndef _WIN32
@@ -450,12 +452,6 @@ size_t totalInternalHeap() {
     return 0; // Not meaningful on desktop
 }
 
-void getMacAddress(uint8_t mac[6]) {
-    // Stable fake MAC for desktop (consistent deviceName across runs)
-    mac[0] = 0xDE; mac[1] = 0xAD; mac[2] = 0xBE;
-    mac[3] = 0xEF; mac[4] = 0xCA; mac[5] = 0xFE;
-}
-
 const char* macString() {
     static char buf[18] = {};
     if (buf[0] == 0) {
@@ -604,6 +600,7 @@ std::filesystem::path defaultRoot() {
 }
 
 std::filesystem::path fsRoot_{defaultRoot()};
+
 
 // Map "/.config/foo.json" → "<root>/.config/foo.json". Strips leading '/'s, normalizes
 // the result, and rejects paths that escape fsRoot_ (e.g. "../../etc/passwd"). Returns
@@ -1050,6 +1047,85 @@ bool winDescForPcapName(const MIB_IF_TABLE2* table, const char* pcapName, char* 
 }
 #endif  // _WIN32
 }  // namespace
+
+void getMacAddress(uint8_t mac[6]) {
+    // A STORED identity, generated once and kept beside the config. This is systemd's machine-id
+    // pattern (freedesktop.org/software/systemd/man/machine-id): try for something stable, else
+    // generate randomly, then SAVE it so it never moves again.
+    //
+    // It matters because the MAC is an identity, not a diagnostic: `deviceName` defaults to
+    // MM-XXXX from it, and the MQTT topic prefix and Home Assistant `unique_id` are derived from
+    // it too. A hardcoded value made every desktop instance `MM-CAFE` on one topic, so two
+    // desktops or a handful of containers were indistinguishable and fought over the same MQTT
+    // entity. Home Assistant's own requirement is that a unique_id survive container recreation,
+    // which is exactly what storing it achieves and what reading a host NIC does not: this Mac
+    // lists an internal management interface (anpi1) before its real one, and containers sharing a
+    // bridge can present related addresses.
+    //
+    // Locally-administered and unicast (first octet 0x02): the IEEE range set aside for addresses
+    // that are not vendor-assigned, so this can never collide with real hardware.
+    //
+    // EXISTING installs keep their identity. A tree with no identity file is seeded with the old
+    // hardcoded value rather than a fresh one, so an upgrade does not silently rename the device or
+    // move its MQTT topics; only a genuinely new instance gets a new address.
+    // Cached per ROOT rather than once per process: fsSetRoot can move the config (tests do it
+    // between cases), and an identity cached from a previous root would then describe the wrong
+    // install. Comparing the path is cheap next to re-reading the file every tick.
+    static std::filesystem::path resolvedFor;
+    static uint8_t cached[6] = {0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE};
+    if (resolvedFor != fsRoot_) {
+        resolvedFor = fsRoot_;
+        for (int i = 0; i < 6; i++) cached[i] = 0;
+        cached[0] = 0xDE; cached[1] = 0xAD; cached[2] = 0xBE;
+        cached[3] = 0xEF; cached[4] = 0xCA; cached[5] = 0xFE;
+        std::error_code ec;
+        // fsRoot_, not defaultRoot(): the root is settable (fsSetRoot, which tests and a
+        // relocated install both use), so the identity must follow the config it belongs to
+        // rather than the process's working directory.
+        const std::filesystem::path file = fsRoot_ / ".config" / "identity";
+        bool loaded = false;
+        if (std::ifstream in(file); in) {
+            unsigned b[6] = {};
+            if (in >> std::hex >> b[0] >> b[1] >> b[2] >> b[3] >> b[4] >> b[5]) {
+                bool sane = true;
+                for (int i = 0; i < 6; i++) if (b[i] > 0xFF) sane = false;
+                if (sane) { for (int i = 0; i < 6; i++) cached[i] = static_cast<uint8_t>(b[i]); loaded = true; }
+            }
+        }
+        if (!loaded) {
+            // No stored identity, so this is either a fresh install or one that predates the
+            // identity file. They are told apart by whether the tree already holds CONFIG: a
+            // pre-existing install keeps the historic address, so an upgrade never renames a
+            // device or moves its MQTT topics, while a new one gets its own.
+            //
+            // Reading it here is safe precisely because this runs during SystemModule::setup(),
+            // which Scheduler::setup() calls BEFORE the config load (Scheduler.cpp): a fresh tree
+            // genuinely has no config yet at this instant. It writes some moments later, which is
+            // why the answer is decided once and stored rather than re-derived.
+            bool existing = false;
+            if (std::filesystem::is_directory(fsRoot_ / ".config", ec) && !ec) {
+                for (const auto& e : std::filesystem::directory_iterator(fsRoot_ / ".config", ec)) {
+                    if (e.path().extension() == ".json") { existing = true; break; }
+                }
+            }
+            if (!existing) {
+                std::random_device rd;
+                for (int i = 0; i < 6; i++) cached[i] = static_cast<uint8_t>(rd() & 0xFF);
+                cached[0] = static_cast<uint8_t>((cached[0] & 0xFC) | 0x02);   // locally administered, unicast
+            }
+            std::filesystem::create_directories(file.parent_path(), ec);
+            if (std::ofstream out(file); out) {
+                char line[24];
+                std::snprintf(line, sizeof(line), "%02X %02X %02X %02X %02X %02X",
+                              cached[0], cached[1], cached[2], cached[3], cached[4], cached[5]);
+                out << line << "\n";
+            }
+            // A write failure is not fatal: the address is still valid for this run, and the next
+            // start will try again. A read-only mount then behaves like the old constant did.
+        }
+    }
+    for (int i = 0; i < 6; i++) mac[i] = cached[i];
+}
 
 // Open a raw L2 socket on `ifName` so a host build drives panels for real — the deployment a Pi or
 // a mini-PC covers, and the same code path the ESP32 takes. Linux uses AF_PACKET, macOS BPF; both

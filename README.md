@@ -8,6 +8,8 @@ Drive large LED installations and DMX fixtures. One source tree drives ESP32, Te
 
 📦 **Release + downloads:** [latest release](https://github.com/MoonModules/projectMM/releases/latest)
 
+🐳 **No hardware handy?** `docker run -p 8081:8080 -v projectmm:/data ghcr.io/moonmodules/projectmm:latest` runs the whole system in a container: the same UI and effect pipeline, driving fixtures over Art-Net, DDP or E1.31. See [building.md § Docker](docs/building.md#docker).
+
 🛠️ **Building / hacking on it?** [MoonDeck](moondeck/MoonDeck.md), our browser-based dev console (build · flash · test · live device discovery), comes in the repo.
 
 Open Chrome or Edge, plug in your device, and you'll see lights in under a minute.

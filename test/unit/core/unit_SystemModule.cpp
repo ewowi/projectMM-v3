@@ -19,16 +19,29 @@ public:
 };
 } // namespace
 
-// On the desktop platform (MAC DE:AD:BE:EF:CA:FE), the auto-generated device name is "MM-CAFE" (last two MAC bytes).
-TEST_CASE("SystemModule MAC-to-deviceName") {
-    // Desktop platform returns MAC DE:AD:BE:EF:CA:FE
-    // deviceName should be MM-CAFE (last two bytes)
-    mm::SystemModule sys;
-    sys.setup();
-    CHECK(std::strcmp(sys.deviceName(), "MM-CAFE") == 0);
+/// The derived name is "MM-" plus the last two MAC bytes in hex, whatever those bytes are.
+///
+/// Pinned by SHAPE rather than against one literal: the desktop MAC is a stored per-install
+/// identity now (platform_desktop.cpp, getMacAddress), so a fresh install generates its own and
+/// asserting "MM-CAFE" would pin the old hardcoded constant rather than the derivation.
+bool looksLikeMacName(const char* name) {
+    uint8_t mac[6] = {};
+    mm::platform::getMacAddress(mac);
+    char expect[8] = {};
+    std::snprintf(expect, sizeof(expect), "MM-%02X%02X", mac[4], mac[5]);
+    return std::strcmp(name, expect) == 0;
 }
 
-// deviceName is bound as a Text control to the MAC-derived default ("MM-CAFE" on the desktop platform).
+// The auto-generated device name is "MM-" plus the last two MAC bytes (see looksLikeMacName).
+TEST_CASE("SystemModule MAC-to-deviceName") {
+    // Desktop platform returns MAC DE:AD:BE:EF:CA:FE
+    // deviceName follows the MAC, whatever this install's stored identity is
+    mm::SystemModule sys;
+    sys.setup();
+    CHECK(looksLikeMacName(sys.deviceName()));
+}
+
+// deviceName is bound as a Text control to the MAC-derived default (see looksLikeMacName).
 TEST_CASE("SystemModule deviceName control") {
     mm::SystemModule sys;
     sys.setup();
@@ -38,7 +51,7 @@ TEST_CASE("SystemModule deviceName control") {
     for (uint8_t i = 0; i < sys.controls().count(); i++) {
         if (std::strcmp(sys.controls()[i].name, "deviceName") == 0) {
             CHECK(sys.controls()[i].type == mm::ControlType::Text);
-            CHECK(std::strcmp(static_cast<char*>(sys.controls()[i].ptr), "MM-CAFE") == 0);
+            CHECK(looksLikeMacName(static_cast<char*>(sys.controls()[i].ptr)));
             found = true;
         }
     }
@@ -84,7 +97,7 @@ TEST_CASE("SystemModule falls back to the MAC name when deviceName is all-invali
     sys.defineControls();
     writeDeviceName(sys, "!@#$");
     sys.tick1s();
-    CHECK(std::strcmp(sys.deviceName(), "MM-CAFE") == 0);   // desktop MAC fallback
+    CHECK(looksLikeMacName(sys.deviceName()));   // the MAC-derived fallback
 }
 
 // An already-valid name is left untouched (idempotent) — a normal user name survives.

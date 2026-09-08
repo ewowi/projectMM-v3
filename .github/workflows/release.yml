@@ -422,6 +422,10 @@ jobs:
     # the `main` ref, so a tag push can't deploy Pages itself).
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
+      # The resolved semver, so the container job can tag its image with the same string the
+      # binary reports. Computed here already for the manifests; exposed rather than recomputed,
+      # because two computations are two chances to disagree about what this release is called.
+      version: ${{ steps.ver.outputs.version }}
     # No `environment: github-pages` here: that environment's protection rule
     # only allows `main`, so binding asset-publishing to it made every vX.Y.Z
     # tag run fail BEFORE any step ran — including the asset upload — leaving
@@ -587,6 +591,93 @@ jobs:
             dist/projectMM-*.dmg
             dist/projectMM-*-setup.exe
             dist/projectmm_*.deb
+
+  # Publish the container image to the GitHub Container Registry, one per release.
+  #
+  # It runs AFTER `release` and pulls the .deb from that job's artifacts rather than downloading it
+  # from the API: the release the image describes is the one that just built, so taking the package
+  # from the same run is what makes the image and the binary provably the same build. It also means
+  # the image exists the moment the release does, with no window where `latest` points at the
+  # previous version.
+  #
+  # amd64 only, because the .deb is. An arm64 image needs an arm64 Linux build in `build-linux`
+  # first, at which point this job gains a `platforms:` line and nothing else changes.
+  publish-container:
+    if: startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    needs: [release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write     # push to ghcr.io; GITHUB_TOKEN carries it, no secret to manage
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # The same .deb the release published, from the same run.
+      - uses: actions/download-artifact@v4
+        with:
+          name: desktop-linux
+          path: dist
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Lowercase, because a registry path must be and the org is not: `MoonModules/projectMM`
+      # would be rejected where `moonmodules/projectmm` is accepted.
+      - name: Resolve image name
+        id: img
+        env:
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          echo "name=ghcr.io/$(echo "$REPO" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      # A build context of just the .deb, so the image installs THIS run's package instead of
+      # resolving one from the API the way a local `docker build` does. Written here rather than
+      # kept as a second Dockerfile in the repo: it is four lines, and two Dockerfiles that must
+      # agree about the runtime is exactly the duplication that drifts.
+      - name: Write the release Dockerfile
+        run: |
+          set -euo pipefail
+          deb=$(ls dist/projectmm_*_amd64.deb | head -1)
+          test -n "$deb"
+          mkdir -p ctx && cp "$deb" ctx/projectmm.deb
+          cat > ctx/Dockerfile <<'DOCKERFILE'
+          FROM debian:trixie-slim AS fetch
+          COPY projectmm.deb /tmp/projectmm.deb
+          RUN dpkg-deb -x /tmp/projectmm.deb /rootfs
+          # debian13, NOT debian12: the binary is built on ubuntu-24.04 (glibc 2.39) and needs
+          # glibc >= 2.38, where bookworm ships 2.36 and it dies at startup. See ../../Dockerfile.
+          FROM gcr.io/distroless/cc-debian13
+          COPY --from=fetch /rootfs/usr/bin/projectMM /usr/bin/projectMM
+          ENV XDG_DATA_HOME=/data
+          VOLUME /data
+          EXPOSE 8080
+          ENTRYPOINT ["/usr/bin/projectMM"]
+          DOCKERFILE
+
+      # Two tags: the exact version, which never moves, and `latest`, which follows this workflow's
+      # own notion of latest (the rolling prerelease from main, or a tagged release). A user pins
+      # one or tracks the other.
+      - uses: docker/build-push-action@v6
+        with:
+          context: ctx
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.img.outputs.name }}:${{ needs.release.outputs.version }}
+            ${{ steps.img.outputs.name }}:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ needs.release.outputs.version }}
+            org.opencontainers.image.description=Drive large LED installations and DMX fixtures
+            org.opencontainers.image.licenses=GPL-3.0
 
   # Deploy the web installer to GitHub Pages. Separate from `release` because
   # the `github-pages` environment's protection rule only allows `main` — so

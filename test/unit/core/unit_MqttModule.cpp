@@ -51,10 +51,35 @@ struct FakeDrivers : public MoonModule {
 
 // Build a scheduler with FakeDrivers + a SystemModule + an MqttModule, run setup so
 // Scheduler::instance() is live and controls are bound. The topic prefix is STABLE + MAC-derived
-// (projectMM/<last6-of-MAC>), NOT from deviceName — so it's rename-proof. On desktop the fake MAC is
-// DE:AD:BE:EF:CA:FE (platform_desktop.cpp), so last-6 = "efcafe".
+// (projectMM/<last6-of-MAC>), NOT from deviceName, so it is rename-proof.
+//
+// DERIVED here rather than written out, because the desktop MAC is a per-install stored identity
+// (platform_desktop.cpp, getMacAddress): a literal would pin whatever this machine happens to
+// generate, and it is the rename-proof DERIVATION these cases exist to check.
+/// The last six MAC hex digits alone, which is what the Home Assistant discovery topic and its
+/// unique_id are built from.
+inline const char* macId() {
+    static char buf[16] = {};
+    if (!buf[0]) {
+        uint8_t mac[6] = {};
+        mm::platform::getMacAddress(mac);
+        std::snprintf(buf, sizeof(buf), "%02x%02x%02x", mac[3], mac[4], mac[5]);
+    }
+    return buf;
+}
+
+inline const char* macPrefix() {
+    static char buf[32] = {};
+    if (!buf[0]) {
+        uint8_t mac[6] = {};
+        mm::platform::getMacAddress(mac);
+        std::snprintf(buf, sizeof(buf), "projectMM/%02x%02x%02x", mac[3], mac[4], mac[5]);
+    }
+    return buf;
+}
+
 struct Rig {
-    static constexpr const char* kPrefix = "projectMM/efcafe";   // desktop fake MAC last-6
+    const char* const kPrefix = macPrefix();
     Scheduler scheduler;
     FakeDrivers* drivers = new FakeDrivers();
     SystemModule* system = new SystemModule();
@@ -213,19 +238,19 @@ TEST_CASE("MqttModule: CONNACK publishes a retained HA discovery config") {
     REQUIRE(len > 0);
     // The captured stream must contain the discovery topic + the key config fields.
     std::string sent(reinterpret_cast<const char*>(cap), len);
-    CHECK(sent.find("homeassistant/light/projectMM_efcafe/config") != std::string::npos);
+    CHECK(sent.find(std::string("homeassistant/light/projectMM_") + macId() + "/config") != std::string::npos);
     CHECK(sent.find("\"schema\":\"json\"") != std::string::npos);
-    CHECK(sent.find("\"uniq_id\":\"projectMM_efcafe\"") != std::string::npos);
-    CHECK(sent.find("projectMM/efcafe/ha/set") != std::string::npos);    // cmd_t
-    CHECK(sent.find("projectMM/efcafe/ha/state") != std::string::npos);  // stat_t
-    CHECK(sent.find("projectMM/efcafe/status") != std::string::npos);    // avty_t
+    CHECK(sent.find(std::string("\"uniq_id\":\"projectMM_") + macId() + "\"") != std::string::npos);
+    CHECK(sent.find(std::string("projectMM/") + macId() + "/ha/set") != std::string::npos);    // cmd_t
+    CHECK(sent.find(std::string("projectMM/") + macId() + "/ha/state") != std::string::npos);  // stat_t
+    CHECK(sent.find(std::string("projectMM/") + macId() + "/status") != std::string::npos);    // avty_t
     CHECK(sent.find("online") != std::string::npos);                     // the retained availability publish
     // The discovery config AND the availability publish must carry the RETAIN bit (bit 0 of the PUBLISH
     // fixed header) — a late-joining HA reads the retained config/state, so dropping retain breaks it.
-    const int cfgFlags = publishFlagsForTopic(cap, len, "homeassistant/light/projectMM_efcafe/config");
+    const int cfgFlags = publishFlagsForTopic(cap, len, (std::string("homeassistant/light/projectMM_") + macId() + "/config").c_str());
     REQUIRE(cfgFlags >= 0);
     CHECK((cfgFlags & 0x01) == 0x01);                                    // discovery config retained
-    const int avtyFlags = publishFlagsForTopic(cap, len, "projectMM/efcafe/status");
+    const int avtyFlags = publishFlagsForTopic(cap, len, (std::string("projectMM/") + macId() + "/status").c_str());
     REQUIRE(avtyFlags >= 0);
     CHECK((avtyFlags & 0x01) == 0x01);                                   // availability "online" retained
 }
@@ -269,7 +294,7 @@ TEST_CASE("MqttModule: a PUBLISH split across feeds still routes (fragment reass
     r.drivers->on = true;
     uint8_t buf[128];
     const char* payload = "false";
-    const size_t n = buildMqttPublish("projectMM/efcafe/on/set", reinterpret_cast<const uint8_t*>(payload),
+    const size_t n = buildMqttPublish((std::string("projectMM/") + macId() + "/on/set").c_str(), reinterpret_cast<const uint8_t*>(payload),
                                       std::strlen(payload), buf, sizeof(buf));
     REQUIRE(n > 0);
     // Feed one byte at a time — the parser holds partial state until the packet completes.
