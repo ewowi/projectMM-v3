@@ -160,11 +160,19 @@
         }
       },
       {
+        "type": "Drivers",
+        "id": "Drivers",
+        "controls": {
+          "relayPins": "12"
+        }
+      },
+      {
         "type": "RmtLedDriver",
         "id": "RmtLed",
         "parent_id": "Drivers",
         "controls": {
-          "pins": "16"
+          "pins": "16",
+          "lightPreset": 4
         }
       }
     ]
@@ -202,11 +210,12 @@
         }
       },
       {
-        "type": "RmtLedDriver",
-        "id": "RmtLed",
+        "type": "ParallelLedDriver",
+        "id": "ParallelLed",
         "parent_id": "Drivers",
         "controls": {
-          "pins": "2,4"
+          "pins": "2,4",
+          "dcPin": 33
         }
       },
       {
@@ -318,14 +327,6 @@
         }
       },
       {
-        "type": "RmtLedDriver",
-        "id": "RmtLed",
-        "parent_id": "Drivers",
-        "controls": {
-          "pins": "0,1,2,3,4,5,12,13"
-        }
-      },
-      {
         "type": "NetworkModule",
         "id": "Network",
         "controls": {
@@ -336,6 +337,15 @@
           "ethMdcGpio": 23,
           "ethMdioGpio": 18,
           "ethRstGpio": -1
+        }
+      },
+      {
+        "type": "ParallelLedDriver",
+        "id": "ParallelLed",
+        "parent_id": "Drivers",
+        "controls": {
+          "pins": "0,1,2,3,4,5,12,13",
+          "dcPin": 16
         }
       }
     ]
@@ -886,17 +896,6 @@
         }
       },
       {
-        "type": "ParallelLedDriver",
-        "id": "ParallelLed",
-        "parent_id": "Drivers",
-        "controls": {
-          "peripheral": "LCD-IDF",
-          "pins": "47,21,14,9,8,16,15,7,1,2,42,41,40,39,38,48",
-          "clockPin": 19,
-          "dcPin": 20
-        }
-      },
-      {
         "type": "NetworkModule",
         "id": "Network",
         "controls": {
@@ -915,6 +914,17 @@
         "parent_id": "Services",
         "controls": {
           "pin": 4
+        }
+      },
+      {
+        "type": "ParallelLedDriver",
+        "id": "ParallelLed",
+        "parent_id": "Drivers",
+        "controls": {
+          "peripheral": "LCD-IDF",
+          "pins": "47,21,14,9,8,16,15,7,1,2,42,41,40,39,38,48",
+          "clockPin": 19,
+          "dcPin": 20
         }
       }
     ]
@@ -945,17 +955,6 @@
         }
       },
       {
-        "type": "ParallelLedDriver",
-        "id": "ParallelLed",
-        "parent_id": "Drivers",
-        "controls": {
-          "peripheral": "LCD-IDF",
-          "pins": "47,48,21,38,14,39,13,40,12,41,11,42,10,2,3,1",
-          "clockPin": 16,
-          "dcPin": 17
-        }
-      },
-      {
         "type": "NetworkModule",
         "id": "Network",
         "controls": {
@@ -973,6 +972,17 @@
         "parent_id": "Services",
         "controls": {
           "pin": 5
+        }
+      },
+      {
+        "type": "ParallelLedDriver",
+        "id": "ParallelLed",
+        "parent_id": "Drivers",
+        "controls": {
+          "peripheral": "LCD-IDF",
+          "pins": "47,48,21,38,14,39,13,40,12,41,11,42,10,2,3,1",
+          "clockPin": 16,
+          "dcPin": 17
         }
       }
     ]
@@ -1040,7 +1050,8 @@
     "name": "MHC-WLED ESP32-P4 shield",
     "chip": "ESP32-P4",
     "firmwares": [
-      "esp32p4rev1-eth"
+      "esp32p4rev1-eth",
+      "esp32p4rev1-eth-wifi"
     ],
     "image": "assets/deviceModels/mhc-wled-esp32-p4-shield.jpg",
     "url": "https://shop.myhome-control.de/en/ABC-WLED-ESP32-P4-shield/HW10027",
@@ -1081,7 +1092,7 @@
         "parent_id": "Drivers",
         "controls": {
           "peripheral": "Parlio",
-          "pins": "21,20,25,5,22,23,24,27"
+          "pins": "21,20,25,5,7,23,8,27"
         }
       },
       {
@@ -1095,14 +1106,6 @@
           "ethRstGpio": 51,
           "ethClockGpio": 50,
           "ethClockExtIn": true
-        }
-      },
-      {
-        "type": "I2cScanModule",
-        "id": "I2cScan",
-        "controls": {
-          "sda": 7,
-          "scl": 8
         }
       }
     ]

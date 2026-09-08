@@ -514,3 +514,7 @@ TEST_CASE("MultiPinLedDriver allocates a real host bus the driver can encode int
 TEST_CASE("MultiPinLedDriver gives the host bus two distinct buffers when asked") {
     mm::test::checkHostBusDoubleBuffer<mm::I80Peripheral>();
 }
+
+TEST_CASE("MultiPinLedDriver counts the DMA buffers in its memory readout") {
+    mm::test::checkHostBusCountedInHeapReadout<mm::I80Peripheral>();
+}

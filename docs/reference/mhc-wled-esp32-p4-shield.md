@@ -22,12 +22,14 @@ The output/RS-485 terminals, left to right, with the P4 GPIO each carries:
 
 ### 12x outputs — level-shifted, single-ended (LED data)
 
-The LED-data outputs. Each terminal is `O<gpio>` on the silkscreen; a level shifter drives the 5 V strand from the P4's 3.3 V. The catalog wires the Parallel LED driver (peripheral `Parlio`) to the first eight (`21,20,25,5,22,23,24,27`).
+The LED-data outputs. Each terminal is `O<gpio>` on the silkscreen; a level shifter drives the 5 V strand from the P4's 3.3 V. The catalog wires the Parallel LED driver (peripheral `Parlio`) to the **first eight terminals in physical order**: `21,20,25,5,7,23,8,27`.
+
+**The first eight terminals are not the eight lowest-numbered outputs.** Positions 5 and 7 carry GPIO **7** and **8**, not 22 and 24. An earlier version of this table listed `O22`/`O24` in those positions and the catalog followed it, so a strip on terminals 5 and 7 stayed dark while GPIO 22/24 emitted on their RS-485 terminals instead (bench 2026-09-08: two panels of eight unlit, fixed by moving lanes 4 and 6 to GPIO 7/8).
 
 | Terminal | GPIO | Note |
 |---|---|---|
-| O21 O20 O25 O5 O22 O23 O24 O27 | 21 20 25 5 22 23 24 27 | LED lanes (Parallel LED, peripheral `Parlio`, default) |
-| O7 / O8 | 7 / 8 | also the I²C bus (SDA 7 / SCL 8, catalog I2cScan) |
+| O21 O20 O25 O5 O7 O23 O8 O27 | 21 20 25 5 7 23 8 27 | LED lanes (Parallel LED, peripheral `Parlio`, default), in terminal order |
+| O7 / O8 | 7 / 8 | ALSO the I²C bus (SDA 7 / SCL 8). Driving them as LED lanes means no I²C on this shield, which is why the catalog entry carries no I2cScan module. Wire those two strands to `O22`/`O24` instead if you need I²C. |
 | O3 | 3 | also on RS-485 (`A-3-B`) — see note below |
 | O4 | 4 | also on RS-485 (`A-4-B`) — see note below |
 | GND | — | ground for the output block |

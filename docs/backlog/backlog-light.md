@@ -447,7 +447,7 @@ where upscaling has the least to offer.
 
 **The fix when it earns its place:** iterate the OUTPUT rows rather than the input lights, so
 writes are sequential: for each output row, walk its source row once and emit `scale` copies of
-each light's colour, then `memcpy` that finished row to the remaining `scale - 1` rows of the
+each light's color, then `memcpy` that finished row to the remaining `scale - 1` rows of the
 block. Same output, one pass through the destination in address order.
 
 ### Sprite follow-ups (draw::sprite + FlyingToasters shipped; spec + plan in the plans archive)
@@ -489,16 +489,26 @@ a codec. So the three things a Tab5 could be are separate pieces of work, and on
 
 ### Multi-card walls — does a daisy chain work today? (open, ask before building)
 
-The ColorLight format has **no card addressing**: the destination MAC is a fixed constant and every card filters on it, so every card on a segment shows the same image. A user with six cards on a switch observed exactly that.
+The ColorLight format has **no card addressing in the PIXEL path**: the destination MAC is a fixed
+constant and every card filters on it, so every card on a segment shows the same image. A user with
+six cards on a switch observed exactly that.
 
-The industry-standard answer is **daisy-chaining** — a sending card's ports each drive a chain, and each card takes its region by position in the chain. That user works around it with per-card VLANs and a managed switch instead, which he built for throughput and for per-card colour-temperature grouping across mixed panel batches; he described it as his own solution, not a standard.
+The DISCOVERY path does distinguish them. A discovery reply (0x08) carries a controller number at
+payload offset 0x62, and the acknowledgement echoes it plus one, which is how a sender tells several
+cards apart. Documented by a reader of [Harald Kubota's protocol
+write-up](https://hkubota.wordpress.com/2022/01/31/winter-project-colorlight-5a-75b-protocol/) and
+confirmed by its author. That is an identity, not a destination: it does not let a sender aim pixel
+data at one card, so the same-image behavior above stands. It is what a per-card brightness or
+color-temperature feature below would key on.
+
+The industry-standard answer is **daisy-chaining** — a sending card's ports each drive a chain, and each card takes its region by position in the chain. That user works around it with per-card VLANs and a managed switch instead, which he built for throughput and for per-card color-temperature grouping across mixed panel batches; he described it as his own solution, not a standard.
 
 **Establish first whether a daisy chain already works with projectMM** (one contact has a 96K daisy-chained rig). If the cards self-assign by chain position, the standard multi-card case is already solved and nothing is needed. Only if it does not work is there a feature here, and it should follow the daisy-chain standard rather than the VLAN workaround. 802.1Q tagging is technically a clean fit for a raw-L2 sender (the tag is part of the Ethernet header, the switch strips it before the card, so card firmware is unaffected), but it serves one bespoke architecture.
 
 ### Smaller asks from the same thread
 
 - **Read the wall layout from the ColorLight cards.** The cards can report their configuration and at least one user's own tool already does it; it would remove the manual layout step.
-- **Per-card colour temperature and brightness**, via the ColorLight sync-packet bytes, grouped by sync group — used to colour-match mixed panel batches live.
+- **Per-card color temperature and brightness**, via the ColorLight sync-packet bytes, grouped by sync group — used to color-match mixed panel batches live.
 - **Docker image**, asked for by a user tracking updates in an IoT system. The Linux binary and `.deb` already ship, so this is packaging rather than new capability.
 
 ## Sensors and audio-reactive input
@@ -867,3 +877,60 @@ index on load, so a stored selection survives a re-sort. `paletteScript` already
 file name for the editor, so the value exists; what is missing is using it as the authority when the
 list changes. The alternative, appending new scripts rather than sorting them, keeps indices stable
 but makes the picker unreadable as the list grows, which is the trade the sort was chosen over.
+
+## Move the remaining board entries off RmtLedDriver (2026-09-08)
+
+`RmtLedDriver` expands every bit into a 32-bit hardware symbol, so its buffer costs
+**lights x channels x 8 x 4 = 96 bytes per light**. `ParallelLedDriver` bit-bangs the lanes through
+one I2S/LCD_CAM transfer and costs **384 bytes flat**, independent of pin count and light count.
+Measured on the bench, same hardware and same light count either side:
+
+| Board | Lights | RmtLed | ParallelLed | FPS |
+|---|---|---|---|---|
+| QuinLED Dig-Octa 32-8L (8 pins) | 512 | 49,155 B | 384 B | 99 to 407 |
+| QuinLED Dig-Next-2 (.186 vs .122) | 256 | 24,579 B | 384 B | - |
+
+On a classic ESP32 with ~320 KB of internal DRAM that is the difference between 24 KB and 61 KB of
+largest contiguous block, which is what a large allocation actually fails on.
+
+Both those entries are switched. **Twenty entries still specify `RmtLedDriver`**, and most of them
+should stay that way: measured on the QuinLED Dig-2-Go (one lane, 256 lights, no PSRAM), the swap
+CUT the driver's own readout from 32,772 to 512 bytes and LOST 49 KB of free heap (96,552 to
+47,156, steady after a reboot). The i80 DMA frame is sized by the bus width, not the pins in use, so
+a one-lane board pays the same ~50 KB as an eight-lane one, while RMT costs 96 bytes per light. The
+crossover is around 500 lights: below it RMT is cheaper, above it ParallelLed is. (That fixed frame
+was invisible on the card until `driverHeapBytes()` started counting it.)
+
+For the boards where it does pay, the blocker is not the driver: it is that each one needs a **DC
+pin chosen against that board's real pinout**, and picking one blind is how a peripheral lands on a
+pad the package does not have ([lessons](../history/lessons.md), PICO-V3-02: silent TG1WDT, PC at
+panicHandler).
+
+**Two cost classes, and they differ by chip.** On a classic ESP32 only DC costs a GPIO: WR is routed
+through the GPIO matrix to SENSOR_VP (36), bonded on every classic package and driving nothing, so
+`clockPin` can stay -1. On S3 / P4 / S31 the LCD_CAM backend needs a real pad for **both** WR and DC
+(`platform_esp32_i80.cpp`), so those boards pay two pins for a saving that is small at one lane.
+
+**What each board needs**, in order: find a free output-capable GPIO for DC (avoiding strapping
+0/2/5/12/15, flash 6-11, input-only 34-39, and whatever the entry already spends on Ethernet, relays,
+audio or buttons); set it on real hardware and confirm the lights still run; then fold the verified
+values into `deviceModels.json`. Step two is the one that counts, and it is why this is a per-board
+job rather than a sweep.
+
+- **Classic, one free GPIO needed (13):** Dig-Quad V3, Dig-Uno V3, Cube 2020-10 (10 pins, the
+  largest RMT saving left), MHC V4.3, MHC V5.7 PRO, ESP32-WROVER, Dig-2-Go, Serg MiniShield, Serg
+  UniShield V5, Yves V4.8, MM testbench ESP32-16MB, MM testbench classic olimex. Shelly is on the
+  list but is the read-only old-firmware rig, so it changes only with the product owner's say-so.
+- **S3 / S31, two free GPIOs needed (4):** ESP32-S3 N16R8 Dev, ESP32-S3-Zero (N4R2), MM testbench S3,
+  Espressif ESP32-S31 CoreBoard. Worth checking the saving is worth two pins at one lane before
+  switching these.
+- **No pins defined (3):** Generic ESP32 Dev, LOLIN D32, Olimex ESP32-Gateway Rev G. The user supplies
+  pins, so the default driver matters less and they still have to supply DC.
+
+Open question for the boards nobody physically has: propose a DC pin from the vendor pinout and mark
+the entry unverified, or leave them on RMT until someone can test one. RMT stays correct either way,
+it is only more expensive.
+
+Two things to fix while in here: **ESP32-S3-Zero (N4R2) defines both** a `ParallelLedDriver` (pin 2)
+and an `RmtLedDriver` (pin 21), and **MM testbench S3 defines two `RmtLedDriver`s** (pins 38 and 18).
+Both may be deliberate (independent outputs), but they are the only entries shaped that way.

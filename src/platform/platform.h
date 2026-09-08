@@ -74,6 +74,19 @@ void free(void* ptr);
 // Free with the ordinary free().
 void* allocInternal(size_t bytes);
 
+/// How many bytes this process has deliberately allocated through alloc/allocInternal, and the
+/// high-water mark. NOT a heap figure: freeHeap() stays 0 on desktop because callers read that as
+/// "unlimited" and switch off gates that only mean something on a device.
+///
+/// The point is the DELTA. Every buffer the system takes on purpose comes through this seam, so
+/// adding or removing a module moves these by exactly that module's cost, measurable on a laptop
+/// without a board. On ESP32 they report the same thing from the real heap, so a scenario reads one
+/// number on both. `count` is the number of live blocks, which separates "one buffer got bigger"
+/// from "something is allocating per frame".
+size_t allocatedBytes();
+size_t allocatedPeak();
+uint32_t allocatedCount();
+
 // True when the pointer resolves to external (PSRAM) memory: the standard residency probe (IDF's
 // esp_ptr_external_ram). Diagnostic companion to allocInternal's internal-first-PSRAM-fallback pattern:
 // the caller of that pattern cannot otherwise tell which way an allocation landed, and for buffers an

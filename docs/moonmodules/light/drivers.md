@@ -134,6 +134,8 @@ No IP is involved — no address, no port, no DHCP — so the driver works on a 
 
 Origin: ColorLight 5A-75 documented byte layout. Inspired by [FPP](https://github.com/FalconChristmas/fpp) (Falcon Player), the show player that drives these cards from a Raspberry Pi: seeing an FPP rig feed a wall of panels is what prompted this driver, since a board already rendering those frames can send them itself and remove the host from the installation. FPP is also the reference point for what good looks like here, sustaining 50 fps.
 
+Protocol references: [FPP's ColorLight-5a-75.cpp](https://github.com/FalconChristmas/fpp/blob/master/src/channeloutput/ColorLight-5a-75.cpp) is the implementation this driver's byte layout agrees with, and Harald Kubota's [5A-75B protocol write-up](https://hkubota.wordpress.com/2022/01/31/winter-project-colorlight-5a-75b-protocol/) documents the same wire format independently, including the brightness and color-temperature bytes and the discovery exchange. Read it with its comments: a reader supplied the controller-number field that makes multiple cards on one segment distinguishable, and the article's own MAC pair is printed the other way round from FPP's (destination `11:22:33:44:55:66`, source `22:22:33:44:55:66`, which is what this driver sends and what the cards filter on). Its lineage runs back to the [original mplayer-colorlight reverse engineering](http://www.mylifesucks.de/oss/mplayer-colorlight/).
+
 [Tests](../../tests/unit-tests.md#panelcarddriver)
 
 Detail: [technical](moxygen/PanelCardDriver.md)

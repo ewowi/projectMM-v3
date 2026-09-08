@@ -50,6 +50,44 @@ inline void checkHostBusAllocates() {
     CHECK(peripheral.busBuffer(0) == nullptr);
 }
 
+/// The DMA buffers must show up in the driver's memory readout.
+///
+/// They are allocated by the platform rather than by the driver, and were once left out of
+/// driverHeapBytes() on that ownership argument. That made the card lie about the one thing a user
+/// picks a driver on: the i80 frame is sized by the BUS WIDTH, not by the pins in use, so a
+/// one-lane board pays the same fixed cost as an eight-lane one. On the bench (2026-09-08) a
+/// one-lane board read 512 bytes for this driver against RmtLedDriver's 32 KB while actually
+/// costing 49 KB more free heap, and nothing on screen said so.
+template <typename Peripheral>
+inline void checkHostBusCountedInHeapReadout() {
+    mm::ParallelLedDriver drv;
+    Peripheral peripheral;
+    peripheral.attach(&drv);
+    drv.setPeripheralForTest(&peripheral);
+
+    // Assert through dynamicBytes(), the PUBLIC readout the card renders: driverHeapBytes() is the
+    // protected hook that feeds it, and pinning the visible number is what this test is for.
+    drv.publishHeapBytesForTest();
+    const size_t before = drv.dynamicBytes();
+
+    REQUIRE(peripheral.busInit(4096, /*wantSecondBuffer=*/false));
+    drv.publishHeapBytesForTest();
+    const size_t single = drv.dynamicBytes();
+    CHECK(single >= before + 4096);   // the frame is now visible, whoever allocated it
+
+    // The second buffer is real memory too, and counting it is what tells a user that doubleBuffer
+    // costs a whole extra frame. Measured against the SINGLE-buffered total rather than against
+    // `single` plus a frame: `single` already carries the driver's other buffers, so the increment
+    // to look for is one more frame on top of whatever the readout was.
+    REQUIRE(peripheral.busInit(4096, /*wantSecondBuffer=*/true));
+    drv.doubleBuffer = true;
+    drv.publishHeapBytesForTest();
+    const size_t doubled = drv.dynamicBytes();
+    CHECK(doubled == single + 4096);   // exactly one extra frame, not a re-count of the whole driver
+
+    peripheral.busDeinit();
+}
+
 /// Double-buffering lets the driver encode one frame while the other is in flight, so the two must
 /// be distinct allocations — aliasing them would tear every frame.
 template <typename Peripheral>

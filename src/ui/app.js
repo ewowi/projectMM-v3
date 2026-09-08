@@ -672,7 +672,7 @@ async function addModule(type, parentName, id) {
 
 // Bring a module's card into view and focus its first control (added via the "+" flow).
 function focusModule(name) {
-    const card = document.querySelector(`.card[data-module="${cssEscape(name)}"]`);
+    const card = queryByName(`.card[data-module="${cssEscape(name)}"]`, "data-module", name);
     if (!card) return;
     // A child card can wrap its controls in a collapsed <details> (.card-controls-collapse): open it
     // FIRST so the card is at its expanded height, THEN scroll: scrolling a still-collapsed card lands
@@ -1151,7 +1151,7 @@ function applyTabDot(tab, mod) {
 // WS value patch deliberately never re-runs: so without this, a fault (or an enable/disable) on a background
 // tab would stay invisible until the next full render. (The UI has two render paths; a rule must live in both.)
 function updateTabDot(mod) {
-    const tab = document.querySelector(`.tab[data-tab-mid="${cssEscape(mod.name)}"]`);
+    const tab = queryByName(`.tab[data-tab-mid="${cssEscape(mod.name)}"]`, "data-tab-mid", mod.name);
     if (!tab) return;
     applyTabDot(tab, mod);
     tab.classList.toggle("tab--disabled", mod.enabled === false);   // grey a disabled module's tab title
@@ -1738,7 +1738,7 @@ function createCard(mod, depth) {
         // instead of waiting ~1s for the server's full-state round-trip. (updateTabDot still syncs it on the
         // patch path, idempotently, so this just makes the on/off button the immediate driver.) The tab
         // lives in the parent's strip, found by the same data-tab-mid updateTabDot uses.
-        const tabEl = document.querySelector(`.tab[data-tab-mid="${cssEscape(mod.name)}"]`);
+        const tabEl = queryByName(`.tab[data-tab-mid="${cssEscape(mod.name)}"]`, "data-tab-mid", mod.name);
         if (tabEl) tabEl.classList.toggle("tab--disabled", !on);
     };
     setEnabledUi(mod.enabled === undefined ? true : !!mod.enabled);
@@ -2812,502 +2812,7 @@ function createControl(moduleName, moduleType, ctrl) {
             row.appendChild(input);
             break;
         }
-        case "filepath": {
-            // A file NAME plus an editor for that file's contents. The value travels through
-            // /api/control like any text control; the BODY never does (it cannot: only /api/file
-            // may exceed the request buffer), so the pane below reads and writes it directly.
-            //
-            // `dir` and `ext` come from the module that declared the control, so nothing here knows
-            // what kind of file this is.
-            const dir = ctrl.dir || "";
-            const ext = ctrl.ext || "";
-            // No `dir` means the name IS the path: joinFsPath("", n) would return "/n" and point
-            // at the filesystem root instead of the file the module named.
-            const pathOf = (n) => (n ? (dir ? joinFsPath(dir, n) : n) : "");
-            // Where a script actually IS, which is not always `dir`: a factory script sits in the
-            // catalog's directory until an edit forks it into the user's. The device resolves the
-            // same way (user copy first), so the editor has to look in both or it would open an
-            // empty box for a script that is plainly listed.
-            const scriptPathOf = async (n) => {
-                if (!n || !dir) return pathOf(n);
-                const local = joinFsPath(dir, n);
-                if (!mlGroupForExt(ext)) return local;
-                try {
-                    const here = await fmFetchDir(dir).catch(() => []);
-                    if (here.some(e => !e.isDir && e.name === n)) return local;
-                    const cat = await mlFetchCatalog();
-                    return joinFsPath(cat.dir, n);
-                } catch (_) { return local; }
-            };
-
-            const stack = document.createElement("div");
-            stack.className = "control-fileedit-stack";
-            row.appendChild(stack);
-
-            const bar = document.createElement("div");
-            bar.className = "fileedit-bar";
-
-            // A select-SHAPED button, opening the shared picker. It reads as a select (the current
-            // name, then the ⌄ affordance) and behaves as one, but the list it opens is the same
-            // widget the module picker uses: search, emoji chips, keyboard, one row per script.
-            // A native <select> can only render plain text, so a script's emoji and dimension had
-            // nowhere to go.
-            //
-            // It presents the SAME surface a <select> does (`value`, `options`, `disabled`, and a
-            // `change` event), so everything around it (the fork/share/delete labels, the editor
-            // load, the download-on-pick) is unchanged and unaware.
-            const picker = document.createElement("button");
-            picker.type = "button";
-            picker.className = "control-select fileedit-pick";
-            picker.dataset.mid = moduleName;
-            picker.dataset.key = ctrl.name;
-            // A READ-ONLY filepath names the file something else chose, so it must not offer a
-            // second way to choose: the Drivers palette editor is the case, where `palette` owns the
-            // selection and this pane only edits what that selection resolved to. Two selectors for
-            // one value is how they end up disagreeing.
-            if (ctrl.readonly) { picker.disabled = true; picker.classList.add("is-readonly"); }
-            // The options, as data. `fillPicker` appends option elements exactly as it did to the
-            // <select>; they are never rendered, they are the list the modal is built from.
-            picker.options = [];
-            picker.appendChild = (o) => { picker.options.push(o); return o; };
-            const paintPicker = () => {
-                const cur = picker.options.find(o => o.value === picker._value);
-                picker.textContent = cur ? cur.textContent : "(none)";
-                const caret = document.createElement("span");
-                caret.className = "fileedit-pick-caret";
-                caret.textContent = "\u2304";        // ⌄, the select affordance
-                picker.append(caret);
-            };
-            Object.defineProperty(picker, "value", {
-                get: () => picker._value ?? "",
-                set: (v) => { picker._value = String(v ?? ""); paintPicker(); },
-            });
-            picker._value = "";
-            // innerHTML = "" is how fillPicker clears the list; keep that meaning.
-            Object.defineProperty(picker, "innerHTML", {
-                set: (v) => { if (v === "") { picker.options = []; picker.replaceChildren(); } },
-                get: () => "",
-            });
-            // Which scripts this picker can offer that are not on the device yet. Names only:
-            // picking one downloads it. Empty for a filepath control that is not a script picker.
-            let remote = [];
-            // Local names that also exist in the catalog: a user edit shadowing a factory script.
-            let forks = new Set();
-            // Every name the catalog ships for this role, whether or not it is on the device.
-            let catalogNames = new Set();
-            // Names in the USER's directory: written or edited here, so worth proposing upstream.
-            let localNames = new Set();
-            const fillPicker = async () => {
-                picker.innerHTML = "";
-                const none = document.createElement("option");
-                none.value = ""; none.textContent = "(none)";
-                picker.appendChild(none);
-                let names = [];
-                if (dir) {
-                    try {
-                        const entries = await fmFetchDir(dir);
-                        names = entries.filter(e => !e.isDir && (!ext || e.name.endsWith(ext)))
-                                       .map(e => e.name);
-                    } catch (_) { /* an unreachable directory leaves just "none" */ }
-                }
-                // The user's OWN files, before the factory listing is merged in below: a name here
-                // is something they wrote or edited, which is what the share button offers.
-                localNames = new Set(names);
-                // A script picker also lists the FACTORY directory, where downloads land. A name in
-                // both is the user's edit shadowing the factory copy, which is what the device
-                // resolves too, so it appears once.
-                const group = mlGroupForExt(ext);
-                let cat = null;
-                if (group) {
-                    try {
-                        cat = await mlFetchCatalog();
-                        const factory = await fmFetchDir(cat.dir, true).catch(() => []);
-                        for (const e of factory)
-                            if (!e.isDir && e.name.endsWith(ext) && !names.includes(e.name))
-                                names.push(e.name);
-                    } catch (_) { /* no catalog: the picker still lists what is here */ }
-                }
-                names.sort();
-                // A local name that ALSO exists in the catalog is a fork: the user edited a factory
-                // script, so their copy shadows one that can be restored. Deleting it is a revert,
-                // not a loss, and the delete button says so.
-                // localNames, NOT names: by here `names` also carries the factory listing, so a
-                // script that was downloaded and never touched counted as a fork. It showed the
-                // revert arrow for an edit that does not exist, and reverting it deleted a
-                // /moonlive path with nothing at it.
-                forks = cat ? new Set(((cat[group] || {}).names || []).filter(n => localNames.has(n)))
-                            : new Set();
-                // Everything the catalog offers that is not here yet, listed after the local ones
-                // so a user's own scripts stay at the top of the list.
-                remote = cat ? ((cat[group] || {}).names || []).filter(n => !names.includes(n)) : [];
-                // Every name the library ships for this role, downloaded or not: what the share
-                // button uses to tell a user's own script from one of ours.
-                catalogNames = new Set(cat ? ((cat[group] || {}).names || []) : []);
-
-                // The current value may name a file the listing does not have (deleted underneath,
-                // or a directory that could not be read). Keep it selectable so the card still
-                // shows what the module is pointing at, rather than silently appearing unset.
-                const cur = String(ctrl.value ?? "");
-                if (cur && !names.includes(cur) && !remote.includes(cur)) names.unshift(cur);
-                // What the catalog says each factory script is: its dimension and its own emoji,
-                // read from the script's `int dimensions()` / `string tags()` at build time. So a
-                // row reads like the module picker's rows do, BEFORE the script is downloaded. A
-                // script the catalog does not carry (the user's own) simply has no prefix.
-                const decl = (n) => {
-                    const g = cat && cat[group];
-                    if (!g || !g.names) return "";
-                    const i = g.names.indexOf(n);
-                    if (i < 0) return "";
-                    const marks = [];
-                    if (g.tags && g.tags[i]) marks.push(g.tags[i]);
-                    if (g.dim && DIM_EMOJI[g.dim[i]]) marks.push(DIM_EMOJI[g.dim[i]]);
-                    return marks.length ? marks.join("") + " " : "";
-                };
-                for (const n of names) {
-                    const o = document.createElement("option");
-                    o.value = n; o.textContent = decl(n) + n;
-                    picker.appendChild(o);
-                }
-                // Marked, because picking one costs a download and can fail. One list rather than
-                // two groups: to the user it is one library, and where a script happens to live is
-                // the device's business.
-                for (const n of remote) {
-                    const o = document.createElement("option");
-                    o.value = n;
-                    o.textContent = "\u2601 " + decl(n) + n;   // cloud: not on this device yet
-                    picker.appendChild(o);
-                }
-                picker.value = cur;
-                refreshDelLabel();
-            };
-
-            // Save sits with the other file actions rather than in a row of its own: the card is
-            // already narrow, and the dot on it is what marks unsaved work.
-            const saveBtn = document.createElement("button");
-            saveBtn.className = "card-btn fm-editor-save fileedit-glyph-lg";
-            // U+2398, the ISO "store" symbol. Not an arrow: ↥ and ↧ already mean upload and
-            // download here, and ⤓ downloads a file in the tree, so an arrow would read as
-            // "fetch this" on a button that writes. Not ✓ either, which is the ARMED DELETE
-            // state one button along.
-            saveBtn.textContent = "⎘";
-            saveBtn.title = "Save (or click away, or Ctrl/Cmd+S)";
-
-            // The same modal the File Manager opens from a file row: one editor, reached two ways,
-            // so a script that needs room gets the full-size box without a second implementation.
-            const popBtn = document.createElement("button");
-            popBtn.className = "card-btn fileedit-glyph-lg";
-            popBtn.textContent = "⤢";                  // expand, the usual glyph for a bigger view
-            popBtn.title = "Open in a larger window";
-
-            // No second status line: the module's own `status` control already reports what the
-            // save produced ("2036 B", or the parse error), and it is the authoritative one because
-            // the DEVICE writes it. A browser-side copy said the same thing in different words and
-            // could only ever disagree. What the browser knows and the device cannot (unsaved work,
-            // a save in flight, a failed write) rides the Save button instead: its dot, its
-            // disabled state, and its tooltip.
-            const statusEl = document.createElement("span");
-            statusEl.hidden = true;
-
-            const newBtn = document.createElement("button");
-            newBtn.className = "card-btn";
-            newBtn.textContent = "+";                  // the same + the module tree adds with
-            newBtn.title = "New script";
-            const delBtn = document.createElement("button");
-            delBtn.className = "card-btn card-btn-del";
-            delBtn.textContent = "×";                  // the card's own delete, red on the symbol
-            delBtn.title = "Delete this script";
-            // The SAME button reverts a factory script, because it is the same operation: the
-            // editor only ever saves to the user directory, so an edited factory script is a second
-            // file shadowing the first, and removing it brings the original back. Saying "delete"
-            // there would misdescribe it, and a second button would make one act look like two.
-            const shareBtn = document.createElement("button");
-            shareBtn.className = "card-btn";
-            shareBtn.textContent = "\u2197";           // north-east arrow: it leaves for somewhere else
-            shareBtn.title = "Propose this script for the shared library";
-
-            function refreshDelLabel() {
-                const isFork = forks.has(picker.value);
-                delBtn.textContent = isFork ? "\u21ba" : "\u00d7";   // undo arrow, or the delete cross
-                delBtn.title = isFork
-                    ? "Revert to the shipped version (discards your changes)"
-                    : "Delete this script";
-                delBtn.classList.toggle("card-btn-del", !isFork);
-                // Offered for anything the user WROTE, which is a script of their own or a fork of
-                // a shipped one: both are a change worth sending back, and the flow differs only in
-                // which GitHub URL it opens. NOT offered for an untouched factory copy, where the
-                // file on the device is byte-identical to the one in the repo and a pull request
-                // would propose no change at all.
-                const known = catalogNames.has(picker.value);
-                const edited = localNames.has(picker.value);   // it sits in the USER directory
-                shareBtn.hidden = !picker.value || !mlGroupForExt(ext) || !edited;
-                shareBtn.title = known
-                    ? "Propose your changes to the shared library"
-                    : "Propose this script for the shared library";
-            }
-            // Share: open a pull request adding this script to the library.
-            //
-            // GitHub's "new file" URL takes the path and the contents as query parameters and opens
-            // its editor pre-filled, forking the repo on the user's behalf when they propose it. So
-            // a script someone wrote on their own device reaches the library with one click and no
-            // API, no token and nothing stored here.
-            //
-            // Only for scripts a user WROTE: a factory script is already in the library, and a fork
-            // of one would open a PR that recreates a file that exists.
-            shareBtn.addEventListener("click", async () => {
-                const name = picker.value;
-                const group = mlGroupForExt(ext);
-                if (!name || !group) return;
-                await editor.save();                  // propose what is on screen, not the last save
-                // A save that failed leaves the pane dirty, and the read below would then fetch the
-                // PREVIOUS text from the device: the user would be proposing something other than
-                // what they are looking at, which is the one outcome worth refusing outright.
-                if (editor.isDirty()) {
-                    alert("Save the script first: it still has unsaved changes.");
-                    return;
-                }
-                let text = "";
-                try {
-                    const res = await fetch("/api/file?path=" + encodeURIComponent(await scriptPathOf(name)));
-                    if (!res.ok) throw new Error(await errorMessage(res));
-                    text = await res.text();
-                } catch (err) { alert("could not read the script: " + err.message); return; }
-
-                const cat = await mlFetchCatalog().catch(() => null);
-                const folder = cat && cat[group] ? cat[group].folder : group;
-                // A name the library already ships is an EDIT of that file; anything else is a new
-                // one. GitHub has a flow for each, and both fork on the user's behalf when they
-                // propose the change, so neither needs write access to this repo.
-                const repoPath = "moonlive/" + folder + "/" + name;
-                const url = catalogNames.has(name)
-                    ? "https://github.com/MoonModules/projectMM/edit/main/" + repoPath
-                      + "?value=" + encodeURIComponent(text)
-                    : "https://github.com/MoonModules/projectMM/new/main"
-                      + "?filename=" + encodeURIComponent(repoPath)
-                      + "&value=" + encodeURIComponent(text);
-                // The script rides in the query string, and browsers stop honoring a URL somewhere
-                // past ~8 KB. Every shipped script is under 2.5 KB so this is headroom rather than a
-                // real limit, but a long one would otherwise open a truncated editor and look fine.
-                if (url.length > 7000) {
-                    await navigator.clipboard.writeText(text).catch(() => {});
-                    alert("This script is too long to send through a link.\n\n"
-                        + "It has been copied to your clipboard: open\n"
-                        + "github.com/MoonModules/projectMM, add a file under moonlive/" + folder
-                        + "/ and paste it there.");
-                    return;
-                }
-                window.open(url, "_blank", "noopener");
-            });
-
-            bar.appendChild(picker);
-            const tools = document.createElement("div");
-            tools.className = "fileedit-tools";
-            tools.appendChild(saveBtn);
-            tools.appendChild(popBtn);
-            if (dir) { tools.appendChild(newBtn); tools.appendChild(shareBtn); tools.appendChild(delBtn); }
-            bar.appendChild(tools);
-            stack.appendChild(bar);
-
-            const pane = document.createElement("div");
-            pane.className = "control-fileedit";
-            stack.appendChild(pane);
-
-            // Saving re-derives on the device: a written file asks the tree to re-prepare, so the
-            // module recompiles or reloads on its own. The browser sends nothing extra.
-            const editor = fmMountEditor(pane, pathOf(ctrl.value), {
-                sizeKey: key,
-                // The status this module is ALREADY reporting, so a card built while its script is
-                // broken shows the marked line straight away rather than waiting for a recompile.
-                // The EDITOR applies it once the file has loaded: marking at construction would
-                // convert the offset against an empty textarea and put every error on line 1.
-                initialStatus: (findModule(moduleName) || {}).status || "",
-                saveButton: saveBtn,
-                statusEl,
-                // Editing a factory script FORKS it: the read came from the library directory, but
-                // the write goes to the user's, so the shipped copy stays untouched and the new one
-                // shadows it. Without this an edit overwrote the library copy and there was nothing
-                // left to revert to.
-                savePath: (readPath) => {
-                    if (!dir) return readPath;
-                    const base = readPath.slice(readPath.lastIndexOf("/") + 1);
-                    return base ? joinFsPath(dir, base) : readPath;
-                },
-                // A save may have just created the fork, so what the picker thinks is local is out
-                // of date: re-read it, which is also what turns the delete button into revert.
-                onSaved: (written) => {
-                    if (!mlGroupForExt(ext)) return;
-                    if (!written.startsWith(dir + "/")) return;
-                    const sel = picker.value;
-                    fillPicker().then(() => { picker.value = sel; refreshDelLabel(); });
-                },
-            });
-            mlEditorAdd(moduleName, editor);
-            // Apply the status the card is ALREADY showing: registration only catches the next one,
-            // so a card rendered while its script is broken would report the error with no line
-            // marked until something recompiled. The modal does the same on open.
-            {
-                const row = document.querySelector(
-                    `[data-status-mid="${cssEscape(moduleName)}"] .status-value`);
-                if (row) editor.markError(row.textContent);
-            }
-
-            // Re-read after the modal closes: it edits the same file through the same endpoints, so
-            // whatever it saved is what this pane should now show.
-            // One row per script, shaped like a type so the shared picker can render it: the name is
-            // what the control stores, the dimension and emoji come from the catalog, and the role
-            // is what the picker prints on the right.
-            const openScriptPicker = async () => {
-                if (picker.disabled) return;
-                const group = mlGroupForExt(ext);
-                const cat = group ? await mlFetchCatalog().catch(() => null) : null;
-                const g = (cat && cat[group]) || {};
-                const roleWord = group ? group.replace(/s$/, "") : "file";
-                const seen = new Set();
-                const items = [];
-                const add = (n, remoteFlag) => {
-                    if (seen.has(n)) return;
-                    seen.add(n);
-                    const i = (g.names || []).indexOf(n);
-                    items.push({
-                        name: n,
-                        // The cloud marks a script the device does not hold yet: picking it costs a
-                        // download, which is worth knowing before choosing.
-                        displayName: (remoteFlag ? "\u2601 " : "") + n,
-                        role: roleWord,
-                        tags: i >= 0 && g.tags ? (g.tags[i] || "") : "",
-                        dim: i >= 0 && g.dim ? g.dim[i] : 0,
-                    });
-                };
-                for (const o of picker.options) if (o.value) add(o.value, remote.includes(o.value));
-                for (const n of (g.names || [])) add(n, !localNames.has(n) && remote.includes(n));
-                if (!items.length) return;
-                // Anchored to the field itself: the picker opens under it as a modal, sized and
-                // placed by openPicker rather than by whatever element it hangs from.
-                openPicker(picker, {
-                    items,
-                    actionLabel: "use",
-                    currentType: picker.value,
-                    // Route through the <select>'s own change handler, which already downloads a
-                    // remote script, updates the delete label and loads the editor. One path for
-                    // both ways of choosing.
-                    commit: (name) => {
-                        picker.value = name;
-                        picker.dispatchEvent(new Event("change"));
-                    },
-                });
-            };
-            picker.addEventListener("click", openScriptPicker);
-
-            popBtn.addEventListener("click", async () => {
-                if (!picker.value) return;
-                // Flush unsaved edits first: the modal loads the file from the device, so opening
-                // it on a dirty pane would show stale bytes and then save them back over the edit.
-                // save() RESOLVES on a failed write (it reports, it does not throw), so the flush is
-                // only trustworthy if the pane came clean: opening anyway would discard the edit.
-                await editor.save();
-                if (editor.isDirty()) { alert("Not opening: this script still has unsaved changes."); return; }
-                const p = await scriptPathOf(picker.value);
-                await openFileEditor(p, undefined, moduleName);
-                await editor.load(p);
-            });
-
-            picker.addEventListener("change", async () => {
-                // Same reason as the modal above: switching files discards the edit otherwise, and
-                // a save that failed leaves the pane dirty while resolving normally.
-                await editor.save();
-                if (editor.isDirty()) {
-                    alert("Not switching: this script still has unsaved changes.");
-                    picker.value = String(ctrl.value ?? "");
-                    return;
-                }
-                const chosen = picker.value;
-                // A factory script the device does not hold yet: download it BEFORE selecting it,
-                // so the module never points at a file that is not there. A failure reports and
-                // puts the picker back, rather than leaving the card pointing at nothing.
-                if (remote.includes(chosen)) {
-                    const previous = String(ctrl.value ?? "");
-                    picker.disabled = true;
-                    try {
-                        await mlDownloadScript(chosen, mlGroupForExt(ext));
-                    } catch (e) {
-                        picker.disabled = false;
-                        alert("could not download " + chosen + ": " + (e && e.message ? e.message : e));
-                        picker.value = previous;
-                        return;
-                    }
-                    picker.disabled = false;
-                    await fillPicker();          // it is local now, so it loses its marker
-                    picker.value = chosen;
-                }
-                refreshDelLabel();
-                dragTs[key] = Date.now();
-                sendControl(moduleName, ctrl.name, chosen);
-                editor.load(await scriptPathOf(chosen));
-            });
-
-            newBtn.addEventListener("click", async () => {
-                let name = (prompt("New file name in " + dir + ":") || "").trim();
-                if (!name) return;
-                if (ext && !name.endsWith(ext)) name += ext;    // a name without its extension is a typo
-                const r = await fmCreateFile(dir, name, ctrl.tmpl || "");
-                if (!r.ok) { alert("create file failed: " + r.message); return; }
-                await fillPicker();
-                picker.value = name;
-                dragTs[key] = Date.now();
-                sendControl(moduleName, ctrl.name, name);
-                await editor.load(pathOf(name));
-                editor.textarea.focus();
-            });
-
-            // Two clicks to delete, the same arm-then-confirm the File Manager uses for its own
-            // delete: destructive next to frequent is how people lose work.
-            armPressTwice(delBtn, async () => {
-                const victim = picker.value;
-                if (!victim) return;
-                const wasFork = forks.has(victim);
-                try {
-                    // A fork is deleted from the USER directory, which is the whole revert: the
-                    // factory copy underneath is what resolves afterwards. Anything else is deleted
-                    // where it actually sits, because a downloaded factory script has no user copy
-                    // and a DELETE on /moonlive/<name> would report a failure for a file that was
-                    // never there.
-                    const target = wasFork ? pathOf(victim) : await scriptPathOf(victim);
-                    const res = await fetch("/api/dir?path=" + encodeURIComponent(target),
-                                            { method: "DELETE" });
-                    if (!res.ok) throw new Error(await errorMessage(res));
-                } catch (err) {
-                    alert((wasFork ? "revert failed: " : "delete failed: ") + err.message);
-                    return;
-                }
-                await fillPicker();
-                if (wasFork) {
-                    // The factory script is what resolves now, so the module keeps running: stay on
-                    // it rather than unsetting the control, which is the whole point of a revert.
-                    picker.value = victim;
-                    refreshDelLabel();
-                    dragTs[key] = Date.now();
-                    sendControl(moduleName, ctrl.name, victim);
-                    await editor.load(await scriptPathOf(victim));
-                    return;
-                }
-                picker.value = "";
-                refreshDelLabel();
-                dragTs[key] = Date.now();
-                sendControl(moduleName, ctrl.name, "");
-                await editor.load("");
-            }, { armedText: "✓", armedTitle: "Click again to confirm" });
-
-            // The editor mounted on the USER path above, which is right for a script the user
-            // wrote and wrong for a factory one that has never been edited. Resolving needs the
-            // catalog, so it cannot happen during the synchronous mount: re-point it once the
-            // listing is in, and only when it actually resolves elsewhere.
-            fillPicker().then(async () => {
-                const cur = String(ctrl.value ?? "");
-                if (!cur || !mlGroupForExt(ext)) return;
-                const real = await scriptPathOf(cur);
-                if (real !== pathOf(cur)) await editor.load(real);
-            });
-            break;
-        }
+        case "filepath": return buildFilePathControl(row, label, key, v, moduleName, ctrl);
         case "password": {
             // ctrl.value arrives XOR-obfuscated + base64-encoded (see
             // HttpServerModule PASSWORD_XOR_KEY). Decode it so the input holds
@@ -3379,186 +2884,7 @@ function createControl(moduleName, moduleType, ctrl) {
             appendResetButton(row, moduleName, ctrl, def, () => { sel.value = def; });
             break;
         }
-        case "palette": {
-            // A color-palette dropdown where EVERY option shows its own gradient: so the colors
-            // are visible before selecting, not just after. A native <select> can't do this
-            // (browsers ignore a gradient background on <option>, and the macOS popup is OS-drawn),
-            // so this is a custom dropdown: a trigger button (selected swatch + name + caret) that
-            // toggles a list of styled rows, each a gradient swatch + name. The value still rides as
-            // the option index. Prior art: MoonLight's palette control (same native-select limit).
-            const opts = ctrl.options || [];
-            const gradientFor = (i) => paletteGradientCss((opts[i] || {}).colors);
-            const wrap = document.createElement("div");
-            wrap.className = "palette-control";
-            wrap.dataset.mid = moduleName;
-            wrap.dataset.key = ctrl.name;
-            wrap.dataset.value = ctrl.value;
-
-            // Trigger: shows the currently-selected palette (swatch + name) and opens the list.
-            const trigger = document.createElement("button");
-            trigger.type = "button";
-            trigger.className = "palette-trigger";
-            const triSwatch = document.createElement("span");
-            triSwatch.className = "palette-swatch";
-            // The selected palette's emoji, beside the swatch, exactly as a module card shows its
-            // type's emoji: the closed control should say what KIND of palette is running (scripted
-            // or built-in, warm or cold) without opening the list to find out.
-            const triEmoji = document.createElement("span");
-            triEmoji.className = "palette-emoji";
-            const triName = document.createElement("span");
-            triName.className = "palette-name";
-            const caret = document.createElement("span");
-            caret.className = "palette-caret";
-            caret.textContent = "▾";
-            const paintTrigger = (i) => {
-                const o = opts[i] || {};
-                triSwatch.style.background = gradientFor(i);
-                triEmoji.textContent = (o.live ? SCRIPTED_EMOJI : "") + (o.tags || "");
-                triName.textContent = o.name || String(i);
-            };
-            paintTrigger(ctrl.value);
-            trigger.append(triSwatch, triEmoji, triName, caret);
-
-            // The LIST is the shared picker, the same widget the module and script pickers use, so a
-            // palette gets search and emoji-chip filtering for free rather than through a second
-            // hand-rolled dropdown that would have to grow both. The trigger above stays: it is what
-            // makes a palette control recognizable at a glance, and a picker row cannot show the
-            // current selection while it is closed.
-            //
-            // Rows carry `colors`, which is what makes the picker paint a gradient beside each name;
-            // every other list passes none and is unchanged.
-            // Factory palettes the device does NOT hold yet, offered alongside the ones it does:
-            // without this a scripted palette can only be chosen once it is already downloaded, so
-            // there is nothing to select in order TO download it. Same contract the script pickers
-            // give every other MoonLive role.
-            //
-            // They sit LAST, after the local live palettes, because a palette is chosen by INDEX and
-            // that index is what the knob and Home Assistant step through. Renumbering is confined
-            // to the live section, which moves only when someone adds or removes a script.
-            const remotePalettes = () => {
-                const names = ((mlCatalog || {}).palettes || {}).names || [];
-                const tags = ((mlCatalog || {}).palettes || {}).tags || [];
-                // BOTH sides stripped of the extension before comparing: the device publishes a
-                // live palette by its full filename ("drift.mlp") and so does the catalog, but
-                // stripping only one side matched nothing, so every already-downloaded palette
-                // showed a second time as a "download me" row.
-                const bare = (s) => String(s).replace(/\.mlp$/, "");
-                const have = new Set(opts.filter(o => o.live).map(o => bare(o.name)));
-                return names.map((n, i) => ({ name: n, tags: tags[i] || "" }))
-                            .filter(r => !have.has(bare(r.name)));
-            };
-            const openList = async () => {
-                // The catalog is fetched lazily and cached, so ask for it BEFORE building the list:
-                // on the first open mlCatalog is still null and every remote row would be missing.
-                // A failure (offline device) is not fatal: the list falls back to what is local.
-                await mlFetchCatalog().catch(() => {});
-                const remote = remotePalettes();
-                const local = opts.map((o, i) => ({
-                    name: String(i),                 // the VALUE: a palette is chosen by index
-                    displayName: o.name || String(i),
-                    // The SCRIPTED marker is the same 📝 a scripted effect carries, prepended
-                    // here rather than baked into the device's tag string: it is a UI fact
-                    // ("this row runs a script"), and the scripted/compiled chips must filter
-                    // palettes by the same rule they filter every other list by.
-                    tags: (o.live ? SCRIPTED_EMOJI : "") + (o.tags || ""),
-                    colors: o.colors || "",
-                    role: "palette",
-                }));
-                // `colors: ""` is what marks a row as not-yet-downloaded: its swatch renders as a
-                // placeholder, because a scripted palette has no gradient until it has run once.
-                const items = local.concat(remote.map(r => ({
-                    name: "\u0000" + r.name,        // not an index: a NAME, to download then select
-                    displayName: r.name.replace(/\.mlp$/, ""),
-                    tags: SCRIPTED_EMOJI + (r.tags || ""),
-                    colors: "",
-                    role: "palette",
-                })));
-                openPicker(trigger, {
-                    items,
-                    actionLabel: "use",
-                    keepOrder: true,          // index order: the knob and HA step through it
-                    currentType: String(ctrl.value),
-                    commit: async (name) => {
-                        // A remote row carries a filename, not an index: fetch it, then let the
-                        // rebuilt control (the device re-lists its .mlp files) select it by index.
-                        if (name.charCodeAt(0) === 0) {
-                            const file = name.slice(1);
-                            try {
-                                await mlDownloadScript(file, "palettes");
-                            } catch (e) {
-                                alert("could not download " + file + ": " + (e && e.message ? e.message : e));
-                                return;
-                            }
-                            // The write itself republishes the option list: POST /api/file ends in
-                            // applyFileChanged() -> requestPrepareTree() -> Drivers::prepare(), which
-                            // re-lists the `.mlp` files. So one fetch after the download sees the new
-                            // palette and it selects in a single click, like every other script role.
-                            mlCatalog = null;               // it is local now: drop the cached list
-                            // Match on the FILENAME, extension included: the device publishes each
-                            // scripted palette under its file name (`spectrum.mlp`), and only the
-                            // picker's displayName drops the extension. Comparing the stripped form
-                            // never matched, so a download that worked ended in an error.
-                            const findCtrl = () => {
-                                const mod = allModules().find(m => m.name === moduleName);
-                                return mod && Array.isArray(mod.controls)
-                                     && mod.controls.find(x => x.name === ctrl.name);
-                            };
-                            await refetchState();
-                            const idx = ((findCtrl() || {}).options || [])
-                                          .findIndex(o => o.name === file);
-                            if (idx < 0) {
-                                // Only reachable if the device accepted the write and then did not
-                                // list the file, which is a device-side fault rather than a wait.
-                                alert("could not select " + file + ": the device saved it but does not list it");
-                                return;
-                            }
-                            const fresh = document.querySelector(
-                                `.palette-control[data-mid="${moduleName}"][data-key="${ctrl.name}"]`);
-                            if (fresh) fresh.dataset.value = idx;
-                            // Repaint the trigger from findCtrl(), NOT paintTrigger()/opts: opts is
-                            // the array captured when this control was first rendered, and the palette
-                            // just downloaded is not in it (refetchState() updated state, not this
-                            // closure). Reading the wrong array would paint a stray row or a blank one,
-                            // so this mirrors updateModuleControls' own "palette" case: the same three
-                            // fields, keyed off the freshly-fetched control.
-                            const freshCtrl = ((findCtrl() || {}).options || [])[idx];
-                            if (fresh && freshCtrl) {
-                                const triSwatch = fresh.querySelector(".palette-trigger .palette-swatch");
-                                if (triSwatch) triSwatch.style.background = paletteGradientCss(freshCtrl.colors || "");
-                                const triEmoji = fresh.querySelector(".palette-trigger .palette-emoji");
-                                if (triEmoji) triEmoji.textContent = (freshCtrl.live ? SCRIPTED_EMOJI : "") + (freshCtrl.tags || "");
-                                const triName = fresh.querySelector(".palette-trigger .palette-name");
-                                if (triName) setText(triName, freshCtrl.name || String(idx));
-                            }
-                            // Stamped the same as the normal (already-local) branch below: without it a
-                            // WS state push landing in this window could overwrite the selection before
-                            // the next render even reads it.
-                            dragTs[key] = Date.now();
-                            sendControl(moduleName, ctrl.name, idx);
-                            return;
-                        }
-                        const i = Number(name);
-                        wrap.dataset.value = i;
-                        paintTrigger(i);
-                        dragTs[key] = Date.now();
-                        sendControl(moduleName, ctrl.name, i);
-                    },
-                });
-            };
-
-            trigger.addEventListener("click", openList);
-
-            wrap.append(trigger);
-            row.appendChild(wrap);
-            // Reset to the default palette like every other persisted control: re-paint the trigger
-            // (sendControl is handled by appendResetButton). No list to re-mark: the picker builds
-            // its rows fresh each time it opens, from the current value.
-            appendResetButton(row, moduleName, ctrl, def, () => {
-                wrap.dataset.value = def;
-                paintTrigger(def);
-            });
-            break;
-        }
+        case "palette": return buildPaletteControl(row, key, def, moduleName, ctrl);
         case "display": {
             // Read-only string. Updates via WS push. A value that IS a url renders as a LINK:
             // the only reason to show one is to open or copy it. Device-relative ("/hls/...") on
@@ -4997,18 +4323,18 @@ function updateValues() {
         updateTabDot(mod);   // a fault on a BACKGROUND tab must surface without opening it
         updateModuleControls(mod);
         // refresh the stats line for this module if visible
-        const statsEl = document.querySelector(`.card-stats[data-mid="${cssEscape(mod.name)}"]`);
+        const statsEl = queryByName(`.card-stats[data-mid="${cssEscape(mod.name)}"]`, "data-mid", mod.name);
         if (statsEl) {
             setText(statsEl, formatStats(mod));
             const t = formatStatsTitle(mod);
             if (statsEl.title !== t) statsEl.title = t;
         }
         // refresh status row: insert it if status appeared after card build
-        let statusRow = document.querySelector(`[data-status-mid="${cssEscape(mod.name)}"]`);
+        let statusRow = queryByName(`[data-status-mid="${cssEscape(mod.name)}"]`, "data-status-mid", mod.name);
         if (mod.status) {
             if (!statusRow) {
                 // Card exists but had no status at build time: insert now before first control.
-                const card = document.querySelector(`.card[data-module="${cssEscape(mod.name)}"]`);
+                const card = queryByName(`.card[data-module="${cssEscape(mod.name)}"]`, "data-module", mod.name);
                 const host = card && (card.querySelector(".card-controls-collapse") || card);
                 if (host) {
                     statusRow = document.createElement("div");
@@ -5040,7 +4366,7 @@ function updateValues() {
             statusRow.style.display = "none";
         }
         // refresh enabled toggle (now a styled <button>, not an <input>)
-        const enabledEl = document.querySelector(`button.module-enabled[data-mid="${cssEscape(mod.name)}"]`);
+        const enabledEl = queryByName(`button.module-enabled[data-mid="${cssEscape(mod.name)}"]`, "data-mid", mod.name);
         if (enabledEl) {
             const ts = dragTs[mod.name + ":enabled"] || 0;
             if (Date.now() - ts > 1000) {
@@ -5049,7 +4375,7 @@ function updateValues() {
                 setText(enabledEl, "\u23FB");
                 enabledEl.classList.toggle("module-enabled--off", !on);
                 enabledEl.setAttribute("aria-pressed", on ? "true" : "false");
-                const cardEl = document.querySelector(`.card[data-module="${cssEscape(mod.name)}"]`);
+                const cardEl = queryByName(`.card[data-module="${cssEscape(mod.name)}"]`, "data-module", mod.name);
                 if (cardEl) cardEl.classList.toggle("card--disabled", !on);
             }
         }
@@ -5081,7 +4407,7 @@ function allModules() {
 // card's child-module block / install-picker mount, never converge, and re-fire
 // every WS tick: a render loop that wedges the UI).
 function syncVisibleControls(mod) {
-    const card = document.querySelector(`.card[data-module="${cssEscape(mod.name)}"]`);
+    const card = queryByName(`.card[data-module="${cssEscape(mod.name)}"]`, "data-module", mod.name);
     if (!card) return false;
     // The controls host is THIS card's own collapse wrapper: must be a DIRECT
     // child (`:scope >`), not any descendant: a container card (e.g. Effects) nests
@@ -5195,7 +4521,7 @@ function updateModuleControls(mod) {
             case "int16":
             case "int32":
             case "pin": {   // pin is a plain number input (no slider sibling); patches the same way
-                const input = document.querySelector(`input[data-mid="${mid}"][data-key="${k}"]`);
+                const input = queryByName(`input[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 // While the demo sweep animates a control, leave it alone: the sweep restores the
                 // real value when it ends, and the next patch after that lands normally.
                 if (input && surfaceDemoRunning() &&
@@ -5209,23 +4535,23 @@ function updateModuleControls(mod) {
                 break;
             }
             case "bool": {
-                const input = document.querySelector(`input[data-mid="${mid}"][data-key="${k}"]`);
+                const input = queryByName(`input[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 if (input && input.checked !== !!ctrl.value) input.checked = !!ctrl.value;
                 break;
             }
             case "text": {
-                const input = document.querySelector(`input[type="text"][data-mid="${mid}"][data-key="${k}"]`);
+                const input = queryByName(`input[type="text"][data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 if (input && input.value !== (ctrl.value ?? "")) input.value = ctrl.value ?? "";
                 break;
             }
             case "textarea": {
-                const input = document.querySelector(`textarea[data-mid="${mid}"][data-key="${k}"]`);
+                const input = queryByName(`textarea[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 // Don't clobber the box while the user is typing in it.
                 if (input && document.activeElement !== input && input.value !== (ctrl.value ?? "")) input.value = ctrl.value ?? "";
                 break;
             }
             case "filepath": {
-                const sel = document.querySelector(`select.fileedit-pick[data-mid="${mid}"][data-key="${k}"]`);
+                const sel = queryByName(`select.fileedit-pick[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 // Don't clobber the choice while it is focused, and don't reload the pane under
                 // someone who is typing in it: the value is only pushed back when it really moved.
                 if (sel && document.activeElement !== sel && sel.value !== (ctrl.value ?? "")) {
@@ -5235,13 +4561,13 @@ function updateModuleControls(mod) {
             }
             case "password": {
                 // The peek button flips the input to type="text", so match either.
-                const input = document.querySelector(`input[data-mid="${mid}"][data-key="${k}"]`);
+                const input = queryByName(`input[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 const decoded = decodePassword(ctrl.value);
                 if (input && input.value !== decoded) input.value = decoded;
                 break;
             }
             case "select": {
-                const sel = document.querySelector(`select[data-mid="${mid}"][data-key="${k}"]`);
+                const sel = queryByName(`select[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 // Never overwrite a select the user currently has OPEN (popup
                 // showing) or focused. data-open is set on pointerdown/focus and
                 // cleared on change/blur: more reliable than document.activeElement,
@@ -5272,7 +4598,7 @@ function updateModuleControls(mod) {
             case "palette": {
                 // Custom dropdown: patch the trigger (swatch + name) and the selected row, but not
                 // while the user has the list open (data-open === "true").
-                const wrap = document.querySelector(`.palette-control[data-mid="${mid}"][data-key="${k}"]`);
+                const wrap = queryByName(`.palette-control[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 if (wrap && wrap.dataset.open !== "true" && Number(wrap.dataset.value) !== Number(ctrl.value)) {
                     wrap.dataset.value = ctrl.value;
                     const cols = ((ctrl.options || [])[ctrl.value] || {}).colors || "";
@@ -5290,18 +4616,18 @@ function updateModuleControls(mod) {
             case "display": {
                 // A url-valued display is an <a>, not a <span> (see renderControl), so this path
                 // has to know both shapes or the link goes stale on the next push.
-                const link = document.querySelector(`a.control-url[data-mid="${mid}"][data-key="${k}"]`);
+                const link = queryByName(`a.control-url[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 if (link) { setUrlDisplay(link, ctrl.value); break; }
                 // The display strip is a segment renderer, not a span: it has to be patched through
                 // its own hook or the surface would freeze at whatever it showed on first render.
-                const strip = document.querySelector(`.seg16[data-mid="${mid}"][data-key="${k}"]`);
+                const strip = queryByName(`.seg16[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 if (strip && strip._setText) { strip._setText(ctrl.value ?? ""); break; }
-                const span = document.querySelector(`span.display[data-mid="${mid}"][data-key="${k}"]`);
+                const span = queryByName(`span.display[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 if (span) setText(span, String(ctrl.value ?? ""));
                 break;
             }
             case "display-int": {
-                const span = document.querySelector(`span.display[data-mid="${mid}"][data-key="${k}"]`);
+                const span = queryByName(`span.display[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 if (span) {
                     // Re-cache the unit in case the device changed it (it
                     // shouldn't, but the WS path is the authority).
@@ -5312,27 +4638,27 @@ function updateModuleControls(mod) {
             }
             case "ipv4": {
                 // Guarded by the shared userActive check above (same as text).
-                const input = document.querySelector(`input.ipv4-input[data-mid="${mid}"][data-key="${k}"]`);
+                const input = queryByName(`input.ipv4-input[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 if (input && input.value !== (ctrl.value ?? "")) input.value = ctrl.value ?? "";
                 break;
             }
             case "time": {
-                const span = document.querySelector(`span.display[data-mid="${mid}"][data-key="${k}"]`);
+                const span = queryByName(`span.display[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 if (span) setText(span, fmtTime(ctrl.value ?? 0));
                 break;
             }
             case "progress": {
-                const bar = document.querySelector(`progress[data-mid="${mid}"][data-key="${k}"]`);
+                const bar = queryByName(`progress[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 if (bar) {
                     bar.value = ctrl.value ?? 0;
                     bar.max = ctrl.total ?? 100;
                 }
-                const lbl = document.querySelector(`span.control-value[data-mid="${mid}"][data-key="${k}.label"]`);
+                const lbl = queryByName(`span.control-value[data-mid="${cssEscape(mid)}"][data-key="${k}.label"]`, "data-mid", mid);
                 if (lbl) setText(lbl, fmtProgressLabel(ctrl));
                 break;
             }
             case "list": {
-                const list = document.querySelector(`div.list-control[data-mid="${mid}"][data-key="${k}"]`);
+                const list = queryByName(`div.list-control[data-mid="${cssEscape(mid)}"][data-key="${k}"]`, "data-mid", mid);
                 if (!list) break;
                 const rows = Array.isArray(ctrl.value) ? ctrl.value : [];
                 const details = Array.isArray(ctrl.detail) ? ctrl.detail : [];
@@ -5399,7 +4725,7 @@ function updateModuleControls(mod) {
         // control itself wins over the type-level ones from /api/types; see defaultFor.
         const def = defaultFor(mod.type, ctrl.name, ctrl);
         if (def !== undefined && def !== null) {
-            const btn = document.querySelector(`button.reset-btn[data-mid="${mid}"][data-key="${k}.reset"]`);
+            const btn = queryByName(`button.reset-btn[data-mid="${cssEscape(mid)}"][data-key="${k}.reset"]`, "data-mid", mid);
             if (btn) {
                 const eq = controlValuesEqual(ctrl, def);
                 btn.classList.toggle("active", !eq);
@@ -5424,6 +4750,23 @@ function cssEscape(s) {
     // Minimal CSS attribute selector escape. Module/control names are alphanumeric
     // in practice, so this is defensive.
     return String(s).replace(/(["\\])/g, "\\$1");
+}
+
+// Find the one element whose `attr` EQUALS `value`, case included.
+//
+// CSS attribute selectors match values case-INSENSITIVELY in an HTML document, while the firmware
+// compares module names with strcmp. So `lines` (a MoonLive effect) and `Lines` (a LinesEffect) are
+// two different modules that every `[data-module="..."]` lookup confuses: querySelector returns
+// whichever sits first in the DOM, and on the bench (2026-09-08) a Layer holding both rendered no
+// effect cards at all. Selectors Level 4 has a case-sensitivity flag for exactly this
+// (`[data-module="x" s]`) and Chrome does not support it: it throws SyntaxError, which takes out
+// every card on the page. So the match is narrowed here instead, which works everywhere.
+function queryByName(selector, attr, value) {
+    const want = String(value);
+    for (const el of document.querySelectorAll(selector)) {
+        if (el.getAttribute(attr) === want) return el;
+    }
+    return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -7622,7 +6965,8 @@ async function openFileEditor(relPath, expectedSize, moduleName) {
     // and a compile failure that happened before the modal opened would otherwise show unmarked
     // until the module recompiles. The row is the card's, so it holds the same text either way.
     if (moduleName) {
-        const row = document.querySelector(`[data-status-mid="${cssEscape(moduleName)}"] .status-value`);
+        const row = (queryByName(`[data-status-mid="${cssEscape(moduleName)}"]`, "data-status-mid", moduleName)
+            || {}).querySelector?.(".status-value");
         if (row) ed.markError(row.textContent);
     }
     dlg.showModal();
@@ -7644,3 +6988,690 @@ async function openFileEditor(relPath, expectedSize, moduleName) {
 // ---------------------------------------------------------------------------
 
 document.addEventListener("DOMContentLoaded", init);
+
+
+/// The palette editor: a gradient strip whose stops are dragged, added and removed, plus the
+/// pickers behind them. Lifted out of createControl's switch, where its 180 lines and the
+/// filepath case's 496 made a dispatch table read as an implementation.
+///
+/// Same shape as buildKnob / buildListEntries / buildListPads above: one control type, one
+/// function, taking exactly what it needs from the row createControl already built.
+function buildPaletteControl(row, key, def, moduleName, ctrl) {
+    // A color-palette dropdown where EVERY option shows its own gradient: so the colors
+    // are visible before selecting, not just after. A native <select> can't do this
+    // (browsers ignore a gradient background on <option>, and the macOS popup is OS-drawn),
+    // so this is a custom dropdown: a trigger button (selected swatch + name + caret) that
+    // toggles a list of styled rows, each a gradient swatch + name. The value still rides as
+    // the option index. Prior art: MoonLight's palette control (same native-select limit).
+    const opts = ctrl.options || [];
+    const gradientFor = (i) => paletteGradientCss((opts[i] || {}).colors);
+    const wrap = document.createElement("div");
+    wrap.className = "palette-control";
+    wrap.dataset.mid = moduleName;
+    wrap.dataset.key = ctrl.name;
+    wrap.dataset.value = ctrl.value;
+
+    // Trigger: shows the currently-selected palette (swatch + name) and opens the list.
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.className = "palette-trigger";
+    const triSwatch = document.createElement("span");
+    triSwatch.className = "palette-swatch";
+    // The selected palette's emoji, beside the swatch, exactly as a module card shows its
+    // type's emoji: the closed control should say what KIND of palette is running (scripted
+    // or built-in, warm or cold) without opening the list to find out.
+    const triEmoji = document.createElement("span");
+    triEmoji.className = "palette-emoji";
+    const triName = document.createElement("span");
+    triName.className = "palette-name";
+    const caret = document.createElement("span");
+    caret.className = "palette-caret";
+    caret.textContent = "▾";
+    const paintTrigger = (i) => {
+        const o = opts[i] || {};
+        triSwatch.style.background = gradientFor(i);
+        triEmoji.textContent = (o.live ? SCRIPTED_EMOJI : "") + (o.tags || "");
+        triName.textContent = o.name || String(i);
+    };
+    paintTrigger(ctrl.value);
+    trigger.append(triSwatch, triEmoji, triName, caret);
+
+    // The LIST is the shared picker, the same widget the module and script pickers use, so a
+    // palette gets search and emoji-chip filtering for free rather than through a second
+    // hand-rolled dropdown that would have to grow both. The trigger above stays: it is what
+    // makes a palette control recognizable at a glance, and a picker row cannot show the
+    // current selection while it is closed.
+    //
+    // Rows carry `colors`, which is what makes the picker paint a gradient beside each name;
+    // every other list passes none and is unchanged.
+    // Factory palettes the device does NOT hold yet, offered alongside the ones it does:
+    // without this a scripted palette can only be chosen once it is already downloaded, so
+    // there is nothing to select in order TO download it. Same contract the script pickers
+    // give every other MoonLive role.
+    //
+    // They sit LAST, after the local live palettes, because a palette is chosen by INDEX and
+    // that index is what the knob and Home Assistant step through. Renumbering is confined
+    // to the live section, which moves only when someone adds or removes a script.
+    const remotePalettes = () => {
+        const names = ((mlCatalog || {}).palettes || {}).names || [];
+        const tags = ((mlCatalog || {}).palettes || {}).tags || [];
+        // BOTH sides stripped of the extension before comparing: the device publishes a
+        // live palette by its full filename ("drift.mlp") and so does the catalog, but
+        // stripping only one side matched nothing, so every already-downloaded palette
+        // showed a second time as a "download me" row.
+        const bare = (s) => String(s).replace(/\.mlp$/, "");
+        const have = new Set(opts.filter(o => o.live).map(o => bare(o.name)));
+        return names.map((n, i) => ({ name: n, tags: tags[i] || "" }))
+                    .filter(r => !have.has(bare(r.name)));
+    };
+    const openList = async () => {
+        // The catalog is fetched lazily and cached, so ask for it BEFORE building the list:
+        // on the first open mlCatalog is still null and every remote row would be missing.
+        // A failure (offline device) is not fatal: the list falls back to what is local.
+        await mlFetchCatalog().catch(() => {});
+        const remote = remotePalettes();
+        const local = opts.map((o, i) => ({
+            name: String(i),                 // the VALUE: a palette is chosen by index
+            displayName: o.name || String(i),
+            // The SCRIPTED marker is the same 📝 a scripted effect carries, prepended
+            // here rather than baked into the device's tag string: it is a UI fact
+            // ("this row runs a script"), and the scripted/compiled chips must filter
+            // palettes by the same rule they filter every other list by.
+            tags: (o.live ? SCRIPTED_EMOJI : "") + (o.tags || ""),
+            colors: o.colors || "",
+            role: "palette",
+        }));
+        // `colors: ""` is what marks a row as not-yet-downloaded: its swatch renders as a
+        // placeholder, because a scripted palette has no gradient until it has run once.
+        const items = local.concat(remote.map(r => ({
+            name: "\u0000" + r.name,        // not an index: a NAME, to download then select
+            displayName: r.name.replace(/\.mlp$/, ""),
+            tags: SCRIPTED_EMOJI + (r.tags || ""),
+            colors: "",
+            role: "palette",
+        })));
+        openPicker(trigger, {
+            items,
+            actionLabel: "use",
+            keepOrder: true,          // index order: the knob and HA step through it
+            currentType: String(ctrl.value),
+            commit: async (name) => {
+                // A remote row carries a filename, not an index: fetch it, then let the
+                // rebuilt control (the device re-lists its .mlp files) select it by index.
+                if (name.charCodeAt(0) === 0) {
+                    const file = name.slice(1);
+                    try {
+                        await mlDownloadScript(file, "palettes");
+                    } catch (e) {
+                        alert("could not download " + file + ": " + (e && e.message ? e.message : e));
+                        return;
+                    }
+                    // The write itself republishes the option list: POST /api/file ends in
+                    // applyFileChanged() -> requestPrepareTree() -> Drivers::prepare(), which
+                    // re-lists the `.mlp` files. So one fetch after the download sees the new
+                    // palette and it selects in a single click, like every other script role.
+                    mlCatalog = null;               // it is local now: drop the cached list
+                    // Match on the FILENAME, extension included: the device publishes each
+                    // scripted palette under its file name (`spectrum.mlp`), and only the
+                    // picker's displayName drops the extension. Comparing the stripped form
+                    // never matched, so a download that worked ended in an error.
+                    const findCtrl = () => {
+                        const mod = allModules().find(m => m.name === moduleName);
+                        return mod && Array.isArray(mod.controls)
+                             && mod.controls.find(x => x.name === ctrl.name);
+                    };
+                    await refetchState();
+                    const idx = ((findCtrl() || {}).options || [])
+                                  .findIndex(o => o.name === file);
+                    if (idx < 0) {
+                        // Only reachable if the device accepted the write and then did not
+                        // list the file, which is a device-side fault rather than a wait.
+                        alert("could not select " + file + ": the device saved it but does not list it");
+                        return;
+                    }
+                    const fresh = queryByName(`.palette-control[data-mid="${cssEscape(moduleName)}"][data-key="${ctrl.name}"]`, "data-mid", moduleName);
+                    if (fresh) fresh.dataset.value = idx;
+                    // Repaint the trigger from findCtrl(), NOT paintTrigger()/opts: opts is
+                    // the array captured when this control was first rendered, and the palette
+                    // just downloaded is not in it (refetchState() updated state, not this
+                    // closure). Reading the wrong array would paint a stray row or a blank one,
+                    // so this mirrors updateModuleControls' own "palette" case: the same three
+                    // fields, keyed off the freshly-fetched control.
+                    const freshCtrl = ((findCtrl() || {}).options || [])[idx];
+                    if (fresh && freshCtrl) {
+                        const triSwatch = fresh.querySelector(".palette-trigger .palette-swatch");
+                        if (triSwatch) triSwatch.style.background = paletteGradientCss(freshCtrl.colors || "");
+                        const triEmoji = fresh.querySelector(".palette-trigger .palette-emoji");
+                        if (triEmoji) triEmoji.textContent = (freshCtrl.live ? SCRIPTED_EMOJI : "") + (freshCtrl.tags || "");
+                        const triName = fresh.querySelector(".palette-trigger .palette-name");
+                        if (triName) setText(triName, freshCtrl.name || String(idx));
+                    }
+                    // Stamped the same as the normal (already-local) branch below: without it a
+                    // WS state push landing in this window could overwrite the selection before
+                    // the next render even reads it.
+                    dragTs[key] = Date.now();
+                    sendControl(moduleName, ctrl.name, idx);
+                    return;
+                }
+                const i = Number(name);
+                wrap.dataset.value = i;
+                paintTrigger(i);
+                dragTs[key] = Date.now();
+                sendControl(moduleName, ctrl.name, i);
+            },
+        });
+    };
+
+    trigger.addEventListener("click", openList);
+
+    wrap.append(trigger);
+    row.appendChild(wrap);
+    // Reset to the default palette like every other persisted control: re-paint the trigger
+    // (sendControl is handled by appendResetButton). No list to re-mark: the picker builds
+    // its rows fresh each time it opens, from the current value.
+    appendResetButton(row, moduleName, ctrl, def, () => {
+        wrap.dataset.value = def;
+        paintTrigger(def);
+    });
+    return row;
+}
+
+/// The script picker: the file list, the inline editor, and the fork handling that decides
+/// whether a save shadows a shipped script. The largest single control by far, and the reason
+/// createControl had grown to 1252 lines.
+function buildFilePathControl(row, label, key, v, moduleName, ctrl) {
+    // A file NAME plus an editor for that file's contents. The value travels through
+    // /api/control like any text control; the BODY never does (it cannot: only /api/file
+    // may exceed the request buffer), so the pane below reads and writes it directly.
+    //
+    // `dir` and `ext` come from the module that declared the control, so nothing here knows
+    // what kind of file this is.
+    const dir = ctrl.dir || "";
+    const ext = ctrl.ext || "";
+    // No `dir` means the name IS the path: joinFsPath("", n) would return "/n" and point
+    // at the filesystem root instead of the file the module named.
+    const pathOf = (n) => (n ? (dir ? joinFsPath(dir, n) : n) : "");
+    // Where a script actually IS, which is not always `dir`: a factory script sits in the
+    // catalog's directory until an edit forks it into the user's. The device resolves the
+    // same way (user copy first), so the editor has to look in both or it would open an
+    // empty box for a script that is plainly listed.
+    const scriptPathOf = async (n) => {
+        if (!n || !dir) return pathOf(n);
+        const local = joinFsPath(dir, n);
+        if (!mlGroupForExt(ext)) return local;
+        try {
+            const here = await fmFetchDir(dir).catch(() => []);
+            if (here.some(e => !e.isDir && e.name === n)) return local;
+            const cat = await mlFetchCatalog();
+            return joinFsPath(cat.dir, n);
+        } catch (_) { return local; }
+    };
+
+    const stack = document.createElement("div");
+    stack.className = "control-fileedit-stack";
+    row.appendChild(stack);
+
+    const bar = document.createElement("div");
+    bar.className = "fileedit-bar";
+
+    // A select-SHAPED button, opening the shared picker. It reads as a select (the current
+    // name, then the ⌄ affordance) and behaves as one, but the list it opens is the same
+    // widget the module picker uses: search, emoji chips, keyboard, one row per script.
+    // A native <select> can only render plain text, so a script's emoji and dimension had
+    // nowhere to go.
+    //
+    // It presents the SAME surface a <select> does (`value`, `options`, `disabled`, and a
+    // `change` event), so everything around it (the fork/share/delete labels, the editor
+    // load, the download-on-pick) is unchanged and unaware.
+    const picker = document.createElement("button");
+    picker.type = "button";
+    picker.className = "control-select fileedit-pick";
+    picker.dataset.mid = moduleName;
+    picker.dataset.key = ctrl.name;
+    // A READ-ONLY filepath names the file something else chose, so it must not offer a
+    // second way to choose: the Drivers palette editor is the case, where `palette` owns the
+    // selection and this pane only edits what that selection resolved to. Two selectors for
+    // one value is how they end up disagreeing.
+    if (ctrl.readonly) { picker.disabled = true; picker.classList.add("is-readonly"); }
+    // The options, as data. `fillPicker` appends option elements exactly as it did to the
+    // <select>; they are never rendered, they are the list the modal is built from.
+    picker.options = [];
+    picker.appendChild = (o) => { picker.options.push(o); return o; };
+    const paintPicker = () => {
+        const cur = picker.options.find(o => o.value === picker._value);
+        picker.textContent = cur ? cur.textContent : "(none)";
+        const caret = document.createElement("span");
+        caret.className = "fileedit-pick-caret";
+        caret.textContent = "\u2304";        // ⌄, the select affordance
+        picker.append(caret);
+    };
+    Object.defineProperty(picker, "value", {
+        get: () => picker._value ?? "",
+        set: (v) => { picker._value = String(v ?? ""); paintPicker(); },
+    });
+    picker._value = "";
+    // innerHTML = "" is how fillPicker clears the list; keep that meaning.
+    Object.defineProperty(picker, "innerHTML", {
+        set: (v) => { if (v === "") { picker.options = []; picker.replaceChildren(); } },
+        get: () => "",
+    });
+    // Which scripts this picker can offer that are not on the device yet. Names only:
+    // picking one downloads it. Empty for a filepath control that is not a script picker.
+    let remote = [];
+    // Local names that also exist in the catalog: a user edit shadowing a factory script.
+    let forks = new Set();
+    // Every name the catalog ships for this role, whether or not it is on the device.
+    let catalogNames = new Set();
+    // Names in the USER's directory: written or edited here, so worth proposing upstream.
+    let localNames = new Set();
+    const fillPicker = async () => {
+        picker.innerHTML = "";
+        const none = document.createElement("option");
+        none.value = ""; none.textContent = "(none)";
+        picker.appendChild(none);
+        let names = [];
+        if (dir) {
+            try {
+                const entries = await fmFetchDir(dir);
+                names = entries.filter(e => !e.isDir && (!ext || e.name.endsWith(ext)))
+                               .map(e => e.name);
+            } catch (_) { /* an unreachable directory leaves just "none" */ }
+        }
+        // The user's OWN files, before the factory listing is merged in below: a name here
+        // is something they wrote or edited, which is what the share button offers.
+        localNames = new Set(names);
+        // A script picker also lists the FACTORY directory, where downloads land. A name in
+        // both is the user's edit shadowing the factory copy, which is what the device
+        // resolves too, so it appears once.
+        const group = mlGroupForExt(ext);
+        let cat = null;
+        if (group) {
+            try {
+                cat = await mlFetchCatalog();
+                const factory = await fmFetchDir(cat.dir, true).catch(() => []);
+                for (const e of factory)
+                    if (!e.isDir && e.name.endsWith(ext) && !names.includes(e.name))
+                        names.push(e.name);
+            } catch (_) { /* no catalog: the picker still lists what is here */ }
+        }
+        names.sort();
+        // A local name that ALSO exists in the catalog is a fork: the user edited a factory
+        // script, so their copy shadows one that can be restored. Deleting it is a revert,
+        // not a loss, and the delete button says so.
+        // localNames, NOT names: by here `names` also carries the factory listing, so a
+        // script that was downloaded and never touched counted as a fork. It showed the
+        // revert arrow for an edit that does not exist, and reverting it deleted a
+        // /moonlive path with nothing at it.
+        forks = cat ? new Set(((cat[group] || {}).names || []).filter(n => localNames.has(n)))
+                    : new Set();
+        // Everything the catalog offers that is not here yet, listed after the local ones
+        // so a user's own scripts stay at the top of the list.
+        remote = cat ? ((cat[group] || {}).names || []).filter(n => !names.includes(n)) : [];
+        // Every name the library ships for this role, downloaded or not: what the share
+        // button uses to tell a user's own script from one of ours.
+        catalogNames = new Set(cat ? ((cat[group] || {}).names || []) : []);
+
+        // The current value may name a file the listing does not have (deleted underneath,
+        // or a directory that could not be read). Keep it selectable so the card still
+        // shows what the module is pointing at, rather than silently appearing unset.
+        const cur = String(ctrl.value ?? "");
+        if (cur && !names.includes(cur) && !remote.includes(cur)) names.unshift(cur);
+        // What the catalog says each factory script is: its dimension and its own emoji,
+        // read from the script's `int dimensions()` / `string tags()` at build time. So a
+        // row reads like the module picker's rows do, BEFORE the script is downloaded. A
+        // script the catalog does not carry (the user's own) simply has no prefix.
+        const decl = (n) => {
+            const g = cat && cat[group];
+            if (!g || !g.names) return "";
+            const i = g.names.indexOf(n);
+            if (i < 0) return "";
+            const marks = [];
+            if (g.tags && g.tags[i]) marks.push(g.tags[i]);
+            if (g.dim && DIM_EMOJI[g.dim[i]]) marks.push(DIM_EMOJI[g.dim[i]]);
+            return marks.length ? marks.join("") + " " : "";
+        };
+        for (const n of names) {
+            const o = document.createElement("option");
+            o.value = n; o.textContent = decl(n) + n;
+            picker.appendChild(o);
+        }
+        // Marked, because picking one costs a download and can fail. One list rather than
+        // two groups: to the user it is one library, and where a script happens to live is
+        // the device's business.
+        for (const n of remote) {
+            const o = document.createElement("option");
+            o.value = n;
+            o.textContent = "\u2601 " + decl(n) + n;   // cloud: not on this device yet
+            picker.appendChild(o);
+        }
+        picker.value = cur;
+        refreshDelLabel();
+    };
+
+    // Save sits with the other file actions rather than in a row of its own: the card is
+    // already narrow, and the dot on it is what marks unsaved work.
+    const saveBtn = document.createElement("button");
+    saveBtn.className = "card-btn fm-editor-save fileedit-glyph-lg";
+    // U+2398, the ISO "store" symbol. Not an arrow: ↥ and ↧ already mean upload and
+    // download here, and ⤓ downloads a file in the tree, so an arrow would read as
+    // "fetch this" on a button that writes. Not ✓ either, which is the ARMED DELETE
+    // state one button along.
+    saveBtn.textContent = "⎘";
+    saveBtn.title = "Save (or click away, or Ctrl/Cmd+S)";
+
+    // The same modal the File Manager opens from a file row: one editor, reached two ways,
+    // so a script that needs room gets the full-size box without a second implementation.
+    const popBtn = document.createElement("button");
+    popBtn.className = "card-btn fileedit-glyph-lg";
+    popBtn.textContent = "⤢";                  // expand, the usual glyph for a bigger view
+    popBtn.title = "Open in a larger window";
+
+    // No second status line: the module's own `status` control already reports what the
+    // save produced ("2036 B", or the parse error), and it is the authoritative one because
+    // the DEVICE writes it. A browser-side copy said the same thing in different words and
+    // could only ever disagree. What the browser knows and the device cannot (unsaved work,
+    // a save in flight, a failed write) rides the Save button instead: its dot, its
+    // disabled state, and its tooltip.
+    const statusEl = document.createElement("span");
+    statusEl.hidden = true;
+
+    const newBtn = document.createElement("button");
+    newBtn.className = "card-btn";
+    newBtn.textContent = "+";                  // the same + the module tree adds with
+    newBtn.title = "New script";
+    const delBtn = document.createElement("button");
+    delBtn.className = "card-btn card-btn-del";
+    delBtn.textContent = "×";                  // the card's own delete, red on the symbol
+    delBtn.title = "Delete this script";
+    // The SAME button reverts a factory script, because it is the same operation: the
+    // editor only ever saves to the user directory, so an edited factory script is a second
+    // file shadowing the first, and removing it brings the original back. Saying "delete"
+    // there would misdescribe it, and a second button would make one act look like two.
+    const shareBtn = document.createElement("button");
+    shareBtn.className = "card-btn";
+    shareBtn.textContent = "\u2197";           // north-east arrow: it leaves for somewhere else
+    shareBtn.title = "Propose this script for the shared library";
+
+    function refreshDelLabel() {
+        const isFork = forks.has(picker.value);
+        delBtn.textContent = isFork ? "\u21ba" : "\u00d7";   // undo arrow, or the delete cross
+        delBtn.title = isFork
+            ? "Revert to the shipped version (discards your changes)"
+            : "Delete this script";
+        delBtn.classList.toggle("card-btn-del", !isFork);
+        // Offered for anything the user WROTE, which is a script of their own or a fork of
+        // a shipped one: both are a change worth sending back, and the flow differs only in
+        // which GitHub URL it opens. NOT offered for an untouched factory copy, where the
+        // file on the device is byte-identical to the one in the repo and a pull request
+        // would propose no change at all.
+        const known = catalogNames.has(picker.value);
+        const edited = localNames.has(picker.value);   // it sits in the USER directory
+        shareBtn.hidden = !picker.value || !mlGroupForExt(ext) || !edited;
+        shareBtn.title = known
+            ? "Propose your changes to the shared library"
+            : "Propose this script for the shared library";
+    }
+    // Share: open a pull request adding this script to the library.
+    //
+    // GitHub's "new file" URL takes the path and the contents as query parameters and opens
+    // its editor pre-filled, forking the repo on the user's behalf when they propose it. So
+    // a script someone wrote on their own device reaches the library with one click and no
+    // API, no token and nothing stored here.
+    //
+    // Only for scripts a user WROTE: a factory script is already in the library, and a fork
+    // of one would open a PR that recreates a file that exists.
+    shareBtn.addEventListener("click", async () => {
+        const name = picker.value;
+        const group = mlGroupForExt(ext);
+        if (!name || !group) return;
+        await editor.save();                  // propose what is on screen, not the last save
+        // A save that failed leaves the pane dirty, and the read below would then fetch the
+        // PREVIOUS text from the device: the user would be proposing something other than
+        // what they are looking at, which is the one outcome worth refusing outright.
+        if (editor.isDirty()) {
+            alert("Save the script first: it still has unsaved changes.");
+            return;
+        }
+        let text = "";
+        try {
+            const res = await fetch("/api/file?path=" + encodeURIComponent(await scriptPathOf(name)));
+            if (!res.ok) throw new Error(await errorMessage(res));
+            text = await res.text();
+        } catch (err) { alert("could not read the script: " + err.message); return; }
+
+        const cat = await mlFetchCatalog().catch(() => null);
+        const folder = cat && cat[group] ? cat[group].folder : group;
+        // A name the library already ships is an EDIT of that file; anything else is a new
+        // one. GitHub has a flow for each, and both fork on the user's behalf when they
+        // propose the change, so neither needs write access to this repo.
+        const repoPath = "moonlive/" + folder + "/" + name;
+        const url = catalogNames.has(name)
+            ? "https://github.com/MoonModules/projectMM/edit/main/" + repoPath
+              + "?value=" + encodeURIComponent(text)
+            : "https://github.com/MoonModules/projectMM/new/main"
+              + "?filename=" + encodeURIComponent(repoPath)
+              + "&value=" + encodeURIComponent(text);
+        // The script rides in the query string, and browsers stop honoring a URL somewhere
+        // past ~8 KB. Every shipped script is under 2.5 KB so this is headroom rather than a
+        // real limit, but a long one would otherwise open a truncated editor and look fine.
+        if (url.length > 7000) {
+            await navigator.clipboard.writeText(text).catch(() => {});
+            alert("This script is too long to send through a link.\n\n"
+                + "It has been copied to your clipboard: open\n"
+                + "github.com/MoonModules/projectMM, add a file under moonlive/" + folder
+                + "/ and paste it there.");
+            return;
+        }
+        window.open(url, "_blank", "noopener");
+    });
+
+    bar.appendChild(picker);
+    const tools = document.createElement("div");
+    tools.className = "fileedit-tools";
+    tools.appendChild(saveBtn);
+    tools.appendChild(popBtn);
+    if (dir) { tools.appendChild(newBtn); tools.appendChild(shareBtn); tools.appendChild(delBtn); }
+    bar.appendChild(tools);
+    stack.appendChild(bar);
+
+    const pane = document.createElement("div");
+    pane.className = "control-fileedit";
+    stack.appendChild(pane);
+
+    // Saving re-derives on the device: a written file asks the tree to re-prepare, so the
+    // module recompiles or reloads on its own. The browser sends nothing extra.
+    const editor = fmMountEditor(pane, pathOf(ctrl.value), {
+        sizeKey: key,
+        // The status this module is ALREADY reporting, so a card built while its script is
+        // broken shows the marked line straight away rather than waiting for a recompile.
+        // The EDITOR applies it once the file has loaded: marking at construction would
+        // convert the offset against an empty textarea and put every error on line 1.
+        initialStatus: (findModule(moduleName) || {}).status || "",
+        saveButton: saveBtn,
+        statusEl,
+        // Editing a factory script FORKS it: the read came from the library directory, but
+        // the write goes to the user's, so the shipped copy stays untouched and the new one
+        // shadows it. Without this an edit overwrote the library copy and there was nothing
+        // left to revert to.
+        savePath: (readPath) => {
+            if (!dir) return readPath;
+            const base = readPath.slice(readPath.lastIndexOf("/") + 1);
+            return base ? joinFsPath(dir, base) : readPath;
+        },
+        // A save may have just created the fork, so what the picker thinks is local is out
+        // of date: re-read it, which is also what turns the delete button into revert.
+        onSaved: (written) => {
+            if (!mlGroupForExt(ext)) return;
+            if (!written.startsWith(dir + "/")) return;
+            const sel = picker.value;
+            fillPicker().then(() => { picker.value = sel; refreshDelLabel(); });
+        },
+    });
+    mlEditorAdd(moduleName, editor);
+    // Apply the status the card is ALREADY showing: registration only catches the next one,
+    // so a card rendered while its script is broken would report the error with no line
+    // marked until something recompiled. The modal does the same on open.
+    {
+        const row = (queryByName(`[data-status-mid="${cssEscape(moduleName)}"]`, "data-status-mid", moduleName)
+            || {}).querySelector?.(".status-value");
+        if (row) editor.markError(row.textContent);
+    }
+
+    // Re-read after the modal closes: it edits the same file through the same endpoints, so
+    // whatever it saved is what this pane should now show.
+    // One row per script, shaped like a type so the shared picker can render it: the name is
+    // what the control stores, the dimension and emoji come from the catalog, and the role
+    // is what the picker prints on the right.
+    const openScriptPicker = async () => {
+        if (picker.disabled) return;
+        const group = mlGroupForExt(ext);
+        const cat = group ? await mlFetchCatalog().catch(() => null) : null;
+        const g = (cat && cat[group]) || {};
+        const roleWord = group ? group.replace(/s$/, "") : "file";
+        const seen = new Set();
+        const items = [];
+        const add = (n, remoteFlag) => {
+            if (seen.has(n)) return;
+            seen.add(n);
+            const i = (g.names || []).indexOf(n);
+            items.push({
+                name: n,
+                // The cloud marks a script the device does not hold yet: picking it costs a
+                // download, which is worth knowing before choosing.
+                displayName: (remoteFlag ? "\u2601 " : "") + n,
+                role: roleWord,
+                tags: i >= 0 && g.tags ? (g.tags[i] || "") : "",
+                dim: i >= 0 && g.dim ? g.dim[i] : 0,
+            });
+        };
+        for (const o of picker.options) if (o.value) add(o.value, remote.includes(o.value));
+        for (const n of (g.names || [])) add(n, !localNames.has(n) && remote.includes(n));
+        if (!items.length) return;
+        // Anchored to the field itself: the picker opens under it as a modal, sized and
+        // placed by openPicker rather than by whatever element it hangs from.
+        openPicker(picker, {
+            items,
+            actionLabel: "use",
+            currentType: picker.value,
+            // Route through the <select>'s own change handler, which already downloads a
+            // remote script, updates the delete label and loads the editor. One path for
+            // both ways of choosing.
+            commit: (name) => {
+                picker.value = name;
+                picker.dispatchEvent(new Event("change"));
+            },
+        });
+    };
+    picker.addEventListener("click", openScriptPicker);
+
+    popBtn.addEventListener("click", async () => {
+        if (!picker.value) return;
+        // Flush unsaved edits first: the modal loads the file from the device, so opening
+        // it on a dirty pane would show stale bytes and then save them back over the edit.
+        // save() RESOLVES on a failed write (it reports, it does not throw), so the flush is
+        // only trustworthy if the pane came clean: opening anyway would discard the edit.
+        await editor.save();
+        if (editor.isDirty()) { alert("Not opening: this script still has unsaved changes."); return; }
+        const p = await scriptPathOf(picker.value);
+        await openFileEditor(p, undefined, moduleName);
+        await editor.load(p);
+    });
+
+    picker.addEventListener("change", async () => {
+        // Same reason as the modal above: switching files discards the edit otherwise, and
+        // a save that failed leaves the pane dirty while resolving normally.
+        await editor.save();
+        if (editor.isDirty()) {
+            alert("Not switching: this script still has unsaved changes.");
+            picker.value = String(ctrl.value ?? "");
+            return;
+        }
+        const chosen = picker.value;
+        // A factory script the device does not hold yet: download it BEFORE selecting it,
+        // so the module never points at a file that is not there. A failure reports and
+        // puts the picker back, rather than leaving the card pointing at nothing.
+        if (remote.includes(chosen)) {
+            const previous = String(ctrl.value ?? "");
+            picker.disabled = true;
+            try {
+                await mlDownloadScript(chosen, mlGroupForExt(ext));
+            } catch (e) {
+                picker.disabled = false;
+                alert("could not download " + chosen + ": " + (e && e.message ? e.message : e));
+                picker.value = previous;
+                return;
+            }
+            picker.disabled = false;
+            await fillPicker();          // it is local now, so it loses its marker
+            picker.value = chosen;
+        }
+        refreshDelLabel();
+        dragTs[key] = Date.now();
+        sendControl(moduleName, ctrl.name, chosen);
+        editor.load(await scriptPathOf(chosen));
+    });
+
+    newBtn.addEventListener("click", async () => {
+        let name = (prompt("New file name in " + dir + ":") || "").trim();
+        if (!name) return;
+        if (ext && !name.endsWith(ext)) name += ext;    // a name without its extension is a typo
+        const r = await fmCreateFile(dir, name, ctrl.tmpl || "");
+        if (!r.ok) { alert("create file failed: " + r.message); return; }
+        await fillPicker();
+        picker.value = name;
+        dragTs[key] = Date.now();
+        sendControl(moduleName, ctrl.name, name);
+        await editor.load(pathOf(name));
+        editor.textarea.focus();
+    });
+
+    // Two clicks to delete, the same arm-then-confirm the File Manager uses for its own
+    // delete: destructive next to frequent is how people lose work.
+    armPressTwice(delBtn, async () => {
+        const victim = picker.value;
+        if (!victim) return;
+        const wasFork = forks.has(victim);
+        try {
+            // A fork is deleted from the USER directory, which is the whole revert: the
+            // factory copy underneath is what resolves afterwards. Anything else is deleted
+            // where it actually sits, because a downloaded factory script has no user copy
+            // and a DELETE on /moonlive/<name> would report a failure for a file that was
+            // never there.
+            const target = wasFork ? pathOf(victim) : await scriptPathOf(victim);
+            const res = await fetch("/api/dir?path=" + encodeURIComponent(target),
+                                    { method: "DELETE" });
+            if (!res.ok) throw new Error(await errorMessage(res));
+        } catch (err) {
+            alert((wasFork ? "revert failed: " : "delete failed: ") + err.message);
+            return;
+        }
+        await fillPicker();
+        if (wasFork) {
+            // The factory script is what resolves now, so the module keeps running: stay on
+            // it rather than unsetting the control, which is the whole point of a revert.
+            picker.value = victim;
+            refreshDelLabel();
+            dragTs[key] = Date.now();
+            sendControl(moduleName, ctrl.name, victim);
+            await editor.load(await scriptPathOf(victim));
+            return;
+        }
+        picker.value = "";
+        refreshDelLabel();
+        dragTs[key] = Date.now();
+        sendControl(moduleName, ctrl.name, "");
+        await editor.load("");
+    }, { armedText: "✓", armedTitle: "Click again to confirm" });
+
+    // The editor mounted on the USER path above, which is right for a script the user
+    // wrote and wrong for a factory one that has never been edited. Resolving needs the
+    // catalog, so it cannot happen during the synchronous mount: re-point it once the
+    // listing is in, and only when it actually resolves elsewhere.
+    fillPicker().then(async () => {
+        const cur = String(ctrl.value ?? "");
+        if (!cur || !mlGroupForExt(ext)) return;
+        const real = await scriptPathOf(cur);
+        if (real !== pathOf(cur)) await editor.load(real);
+    });
+    return row;
+}

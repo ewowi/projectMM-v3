@@ -59,6 +59,10 @@ constexpr FsCandidate kFsCandidates[] = {
 };
 constexpr const char* kFsMountPoint     = "/fs";
 constexpr const char* kNetworkConfig    = "/fs/.config/NetworkModule.json";
+// The application persists its build variant here, which is the one fact this image cannot know
+// about the board it is on: MoonBase is chip-specific and variant-agnostic, so without it the
+// release picker can only offer every firmware for the chip and ask a user in recovery to choose.
+constexpr const char* kSystemConfig     = "/fs/.config/SystemModule.json";
 
 // The AP fallback address matches the application's (NetworkModule uses 4.3.2.1), so a user who
 // has provisioned this device before sees the same address in both firmwares.
@@ -154,6 +158,23 @@ struct {
 // (the catalog pins e.g. 8 dBm for them), and a brownout during recovery is the worst time.
 int txPowerDbm_ = 0;
 
+// The application's build variant ("esp32s3-zero"), or empty when the app has never run here.
+// Empty is the honest answer for a freshly flashed or wiped device, and the page falls back to
+// offering every firmware for the chip rather than pretending to know which one this board takes.
+char g_appVariant[24] = {};
+
+void loadAppVariant() {
+    FILE* f = std::fopen(kSystemConfig, "r");
+    if (!f) return;
+    // Same bounded prefix read as the credentials above, and for the same reason: the file carries
+    // every child module's config behind the identity keys this image needs.
+    char buf[1024];
+    const size_t got = std::fread(buf, 1, sizeof(buf) - 1, f);
+    buf[got] = '\0';
+    std::fclose(f);
+    jsonFindString(buf, "firmware", g_appVariant, sizeof(g_appVariant));
+}
+
 // Read the stored WiFi credentials and Ethernet wiring, if there are any. Absent, unreadable
 // or empty all mean the same thing to the caller: fall through the cascade.
 void loadCredentials() {
@@ -189,6 +210,10 @@ void loadCredentials() {
         jsonFindBool(buf, "ethClockExtIn", &ethCfg_.clockExtIn);
         jsonFindInt(buf, "txPowerSetting", &txPowerDbm_);
     }
+    // BEFORE THE UNMOUNT. This function owns the only window in which the volume is mounted: it
+    // registers the partition above and unregisters it here, so anything that reads a file has to
+    // do it now. Reading the variant after this call returned "no file" for exactly that reason.
+    loadAppVariant();
     esp_vfs_littlefs_unregister(label);
 }
 
@@ -348,6 +373,14 @@ bool wifiAccessPoint() {
 // ---------------------------------------------------------------------------------------------
 
 // The one page MoonBase serves. Inline and tiny: no filesystem read, no compression, no assets.
+// The chip this image was built for, as the release assets spell it: `firmware-esp32s3-zero-...`
+// begins with the IDF target. MoonBase is chip-specific and variant-agnostic, so this is the most
+// it can know about the board, and it is exactly enough to filter a release's asset list down to
+// the firmwares that could run here.
+#ifndef MOONBASE_CHIP
+#define MOONBASE_CHIP CONFIG_IDF_TARGET
+#endif
+
 const char kPage[] =
     "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
     "<title>MoonBase</title><link rel=icon href=/logo.png>"
@@ -380,6 +413,14 @@ const char kPage[] =
     "<br><small>Firmware files: <a href='https://github.com/MoonModules/projectMM/releases' "
     "target=_blank rel=noopener>github.com/MoonModules/projectMM/releases</a> "
     "(the firmware-...bin matching this board)</small></section>"
+    // FROM A RELEASE, without typing a URL. The browser fetches the release list from GitHub
+    // itself (api.github.com sends access-control-allow-origin: *), so THIS image gains no network
+    // code at all: it still only receives a URL, which is what it already accepts. That matters
+    // because a device in recovery is the one that most needs an easy install and the one least
+    // able to offer the application's own picker.
+    "<section><b>From a release</b><br>"
+    "<select id=rel></select> <select id=fw></select> <button onclick=rl()>Install</button>"
+    "<br><small id=rs></small></section>"
     "<section><b>From a URL</b><br><input id=u size=34 placeholder=https://...>"
     "<button onclick=url()>Install</button></section>"
     "<section><b>Back to the app</b><br>Boot the installed firmware without changing it."
@@ -428,16 +469,64 @@ const char kPage[] =
     "if(p.status==404){clearInterval(t);S('done, the app is starting...');"
     "setTimeout(()=>location.reload(),3000);}else{S(await p.text());}}"
     "catch(_){S('restarting...');}},2000);}"
+    // The release list, filtered to assets this CHIP can run. MoonBase is chip-specific and
+    // variant-agnostic (one image serves every variant of a chip), so it cannot know which variant
+    // the board runs: it offers the ones that fit and lets the user pick, which is the same choice
+    // the application's picker presents.
+    "const CHIP='" MOONBASE_CHIP "';let RELS=[],VAR='';"
+    // The board's own variant, when the application has run here and persisted it. With it the
+    // list is the ONE firmware this board takes, as the application's picker shows; without it,
+    // every firmware for the chip, because guessing which of three flash layouts a board has is
+    // how a user in recovery installs the wrong one.
+    "fetch('/api/variant').then(r=>r.text()).then(t=>{VAR=t.trim();fillFw();}).catch(()=>{});"
+    "function fwList(i){const r=RELS[i];if(!r)return [];"
+    "return (r.assets||[]).map(a=>a.name).filter(n=>/^firmware-.+\\.bin$/.test(n)"
+    "&&!/-(bootloader|partition-table|ota-data|slot0)\\.bin$/.test(n)"
+    // The chip must match to a BOUNDARY: "esp32s31" starts with "esp32s3" and is different
+    // silicon, so a plain prefix test offered an S31 image on an S3 board. Every asset spells the
+    // chip then a hyphen, whether a variant follows ("esp32s3-zero-v...") or the version does
+    // ("esp32-v..."), so requiring that hyphen is the whole rule.
+    "&&n.slice(9).startsWith(CHIP)&&n.slice(9+CHIP.length).startsWith('-')"
+    "&&(!VAR||n.slice(9).startsWith(VAR+'-')));}"
+    "function fillFw(){const f=document.getElementById('fw');f.innerHTML='';"
+    "const l=fwList(document.getElementById('rel').selectedIndex);"
+    "for(const n of l){const o=document.createElement('option');o.textContent=n;f.appendChild(o);}"
+    "document.getElementById('rs').textContent=l.length?'':'no firmware for this chip in that release';}"
+    "fetch('https://api.github.com/repos/MoonModules/projectMM/releases?per_page=10')"
+    ".then(r=>r.json()).then(j=>{RELS=j;const s=document.getElementById('rel');"
+    "for(const r of RELS){const o=document.createElement('option');"
+    "o.textContent=(r.name||r.tag_name)+(r.prerelease?' (pre)':'');s.appendChild(o);}"
+    "s.onchange=fillFw;fillFw();})"
+    ".catch(()=>{document.getElementById('rs').textContent="
+    "'could not reach github: use a URL or a file below';});"
+    // Installing a release is installing its URL: one path, so the vetting, the progress and the
+    // retry all behave identically however the URL was chosen.
+    "async function rl(){const r=RELS[document.getElementById('rel').selectedIndex];"
+    "const n=document.getElementById('fw').value;if(!r||!n)return;"
+    "const a=(r.assets||[]).find(x=>x.name===n);if(!a)return;"
+    "document.getElementById('u').value=a.browser_download_url;url();}"
     "async function url(){const u=document.getElementById('u').value;if(!u)return;"
     "const r=await fetch('/api/firmware/url',{method:'POST',body:u});S(await r.text());if(r.ok)W();}"
     // Prefill the URL field with the last install source (RAM-held), so Install doubles as
     // retry: the escape after a cancel or failure wiped the app slot.
     "fetch('/api/firmware/last-url').then(r=>r.text()).then(u=>{if(u)document.getElementById('u').value=u;})"
     ".catch(()=>{});"
+    // RELOAD WHEN THE APP ANSWERS, not after a fixed wait. Eight seconds was a guess that an
+    // S3-Zero misses, so the page reloaded while the device was still booting and showed a failed
+    // page the user then had to refresh by hand. /moonbase is the identity probe: MoonBase answers
+    // it and the app 404s it, so a 404 means the application is up and serving.
     "async function ba(){const r=await fetch('/api/firmware/boot-app',{method:'POST'});S(await r.text());"
-    "if(r.ok)setTimeout(()=>location.reload(),8000);}"
+    "if(!r.ok)return;S('booting the app...');"
+    "for(let i=0;i<60;i++){await new Promise(f=>setTimeout(f,1000));"
+    "try{const p=await fetch('/moonbase',{cache:'no-store'});"
+    "if(p.status==404){location.reload();return;}}catch(e){}}"
+    "S('the app is not answering: it may not be installed');}"
     "async function cx(){S(await (await fetch('/api/firmware/cancel',{method:'POST'})).text());}"
     "</script>";
+
+// The application's build variant ("esp32s3-zero"), or empty when the app has never run here.
+// Empty is the honest answer for a freshly flashed or wiped device, and the page falls back to
+// offering every firmware for the chip rather than pretending to know.
 
 // The application slot. From the factory partition esp_ota_get_next_update_partition returns the
 // first OTA slot, which is the one we want and is never the one we are running from.
@@ -809,6 +898,10 @@ void serveOne(int sock) {
         } else {
             sendResponse(sock, "200 OK", "text/plain", "nothing to cancel");
         }
+    } else if (std::strncmp(head, "GET /api/variant", 16) == 0) {
+        // The application's build variant, read from its config at boot. Empty when the app has
+        // never run here, which the page treats as "offer every firmware for the chip".
+        sendResponse(sock, "200 OK", "text/plain", g_appVariant);
     } else if (std::strncmp(head, "GET /api/version", 16) == 0) {
         // This image's version, from the app descriptor IDF puts in every binary (PROJECT_VER,
         // set by build_moonbase to the same string the application reports). Its own route
@@ -879,7 +972,7 @@ extern "C" void app_main() {
     esp_event_loop_create_default();
     esp_event_handler_instance_register(IP_EVENT, ESP_EVENT_ANY_ID, &onGotIp, nullptr, nullptr);
 
-    loadCredentials();
+    loadCredentials();   // also reads the app's build variant, inside its mount window
 
     // The cascade: Ethernet where the config wires it (its DHCP window overlaps the WiFi
     // join since the GOT_IP bit is shared), then WiFi STA with the stored credentials, then

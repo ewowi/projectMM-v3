@@ -3,6 +3,7 @@
 #include "core/MoonModule.h"
 #include "core/Scheduler.h"
 #include "core/FilesystemModule.h"   // setDeviceModel() arms the debounced save (noteDirty)
+#include "core/build_info.h"        // kFirmwareName: the variant persisted for MoonBase
 #include "platform/platform.h"
 
 #include <cstdio>
@@ -158,6 +159,20 @@ public:
         // the UI (pushed, never user-typed); bound as Text — not ReadOnly — because Text is
         // auto-persisted and the readonly flag is only a UI-render hint.
         controls_.addText("deviceModel", deviceModel_, sizeof(deviceModel_), validateDeviceModel);
+
+        // firmware: the build variant this image is (`esp32s3-zero`), written from kFirmwareName
+        // on every boot rather than read from the file: the compile-time constant is the truth,
+        // and persisting it only puts it somewhere ANOTHER IMAGE can read.
+        //
+        // That reader is MoonBase. It is chip-specific but variant-agnostic (one image serves
+        // every variant of a chip), so on its own it can only offer every firmware for the chip
+        // and ask a user in recovery to pick the right one, where picking an esp32s3-n16r8 for a
+        // Zero installs a flash layout the board does not have. Reading this file narrows the list
+        // to one, the same way the application's own picker does. Text, not ReadOnly, for the
+        // reason deviceModel gives above: Text is what gets persisted.
+        std::snprintf(firmwareVariant_, sizeof(firmwareVariant_), "%s", kFirmwareName);
+        controls_.addText("firmware", firmwareVariant_, sizeof(firmwareVariant_));
+        controls_.setHidden(controls_.count() - 1, true);   // FirmwareUpdateModule's card shows it
         controls_.setReadOnly(controls_.count() - 1, true);
 
         // Dynamic (updated every second)
@@ -349,6 +364,7 @@ private:
     // entry ("Olimex ESP32-Gateway Rev G" = 26) with headroom; the Improv RPC handler
     // caps str_len against this size dynamically.
     char deviceModel_[32] = {};
+    char     firmwareVariant_[24] = {};   ///< the build variant, persisted for MoonBase to read
 
     // Dynamic (updated in tick1s)
     char uptimeStr_[16] = {};
