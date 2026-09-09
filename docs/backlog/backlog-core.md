@@ -17,6 +17,32 @@ diff, and swapping a test's transport is a change that wants its own verificatio
 
 ## Distribution
 
+### An arm64 Linux release build, so SBCs stop building from source (2026-09-09)
+
+Every Linux job in `release.yml` runs on `ubuntu-latest`, which is x86-64, so the release publishes
+`projectMM-linux-x64` and `projectmm_X.Y.Z_amd64.deb` and nothing for arm64. That one gap is why a
+Raspberry Pi or a NanoPi has to clone and compile, and why the container image can only be amd64
+(the image in PR #98 installs the released `.deb`, so an arm64 image needs an arm64 `.deb` first).
+
+GitHub offers arm64 Linux runners for public repositories (`ubuntu-24.04-arm`), so this is a second
+job rather than cross-compilation. Unverified against this repo: whether `package_desktop.py` runs
+there unmodified, and whether the runner is available on this plan. Check both before promising it.
+
+Shipping it collapses three problems into one fix: the SBC route becomes `apt install`, the
+container can publish a multi-arch manifest (one tag, Docker picks per host), and
+[installing-on-linux.md](../tutorials/installing-on-linux.md) loses its build-from-source branch.
+
+### A flashable SD image with projectMM already on it (robwomp, 2026-09-08)
+
+Suggested on Discord while bringing up a NanoPi R28S: most Pi users want to write an `.img` to a
+card and be running, not to install a toolchain. Armbian's own build tooling supports exactly this
+(`armbian/os` carries per-application "extensions", OMV being a small worked example), so the image
+is a spin of a maintained distribution plus our package rather than a distribution to maintain.
+
+Wants the arm64 `.deb` above first: with it the extension is roughly "install this package, enable
+this service", which is the shape those extensions already have. Without it, the image would have to
+carry a source build, which is the thing it exists to avoid.
+
 ### OTA upload refuses a normal client: the body must arrive within ~50 ms (2026-09-02)
 
 `POST /api/firmware/upload` answers `400 {"error":"incomplete request body"}` to an ordinary

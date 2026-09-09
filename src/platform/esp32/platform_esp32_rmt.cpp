@@ -1,15 +1,15 @@
-// RMT WS2812 LED output — the peripheral half of the LED driver.
+// RMT WS2812 LED output: the peripheral half of the LED driver.
 //
-// The driver (src/light/drivers/RmtLedDriver.h) does all the domain work:
-// applies Correction and encodes each pixel into RMT symbols. This file owns
-// only the peripheral — channel setup, the copy-encoder that streams the
-// pre-built symbols, transmit + wait, and the RX side the on-device loopback
-// test uses. No domain logic here.
+// The driver (src/light/drivers/RmtLedDriver.h) does all the domain work: it applies Correction and
+// hands us the WIRE BYTES, the finished per-channel values the strip expects. This file owns only
+// the peripheral: channel setup, the bit expansion, transmit + wait, and the RX side the on-device
+// loopback test uses. No domain logic here.
 //
-// Pre-encoded path: the driver hands us a flat array of WS2812 symbols already
-// in rmt_symbol_word_t layout (our makeRmtSymbol() in RmtSymbol.h packs exactly
-// that 32-bit format), so the TX path uses a *copy* encoder — it just DMAs the
-// bytes out, no per-call symbol generation.
+// Wire-byte path: each byte becomes eight symbols on the way to the peripheral, MSB-first, using
+// the two bit shapes rmtWs2812SetBitTiming programs (makeRmtSymbol in RmtSymbol.h packs that 32-bit
+// format). The IDF bytes encoder does it where RMT has DMA; the classic ESP32's level-5 refill does
+// it inline in rmtHiFill. So the caller keeps 3-4 bytes per light rather than 32 bytes per byte of
+// it: a long strand no longer outgrows the internal RAM the refill is restricted to.
 
 #include "platform/platform.h"
 
@@ -54,7 +54,7 @@
 // critical section masks, and that is what let a refill arrive late (see rmt_hi_vector.S). The
 // RMT interrupt source on core 1 is rerouted to vector 26 (level 5, refused by esp_intr_alloc as
 // "special", so routed by hand), and this code plays each frame ping-pong out of the channel's
-// memory, one half-block per threshold interrupt, straight from the driver's symbol buffer.
+// memory, one half-block per threshold interrupt, straight from the driver's frame buffer.
 //
 // At file scope, outside every namespace: the assembly bridge calls rmtHiIsr by its C name, and
 // RMTMEM is the linker's symbol, so both need external C linkage, which an anonymous namespace
@@ -66,8 +66,10 @@
 // opens on both cores.
 // ---------------------------------------------------------------------------------------------
 struct RmtHiChannel {
-    const uint32_t* cur = nullptr;   // next symbol to copy in
-    const uint32_t* end = nullptr;   // one past the last
+    const uint8_t* cur = nullptr;    // next WIRE BYTE to expand
+    const uint8_t* end = nullptr;    // one past the last
+    uint32_t sym0 = 0;               // the symbol a 0 bit expands to
+    uint32_t sym1 = 0;               // ... and a 1 bit
     uint16_t half = 0;               // symbols per half-block (the threshold)
     uint16_t offset = 0;             // where the next half goes: 0 or `half`
     volatile bool busy = false;      // a frame is on the wire
@@ -88,7 +90,20 @@ static void IRAM_ATTR rmtHiFill(uint8_t ch) {
     RmtHiChannel& c = s_hi[ch];
     volatile uint32_t* dst = &RMTMEM.chan[ch].data32[c.offset];
     uint32_t n = c.half;
-    while (n && c.cur != c.end) { *dst++ = *c.cur++; n--; }
+    // Expand WIRE BYTES to symbols here, MSB-first, rather than copying symbols a caller
+    // pre-expanded. Eight symbols per byte, so the resident buffer is the 3-4 bytes per light the
+    // correction already produces instead of 8 words (32 bytes) per byte of it: 3 KB for 1024
+    // lights where the pre-expanded form wanted 96 KB. That buffer has to be internal RAM (this
+    // runs with the flash cache possibly off), and 96 KB of internal RAM is what a classic ESP32
+    // does not have, so above ~800 lights the pre-expanded form fell back to PSRAM and the
+    // transmit refused every frame: issue #94's frozen strip. The work per half-block is a shift
+    // and a select per bit, well inside the ~40 us deadline.
+    const uint32_t s0 = c.sym0, s1 = c.sym1;
+    while (n >= 8 && c.cur != c.end) {
+        uint8_t data = *c.cur++;
+        for (uint8_t bit = 0; bit < 8; bit++) { *dst++ = (data & 0x80u) ? s1 : s0; data = static_cast<uint8_t>(data << 1); }
+        n -= 8;
+    }
     if (n) *dst = 0;                                   // end marker inside this half
     c.offset = static_cast<uint16_t>(c.offset ? 0 : c.half);
 }
@@ -161,6 +176,8 @@ struct RmtTxState {
     rmt_channel_handle_t channel = nullptr;
     rmt_encoder_handle_t encoder = nullptr;
     uint32_t resolutionHz = 0;
+    uint32_t sym0 = 0, sym1 = 0;  // bit shapes, set live by rmtWs2812SetBitTiming (every chip:
+                                  // the bytes encoder takes them, and so does the level-5 refill)
 #if CONFIG_IDF_TARGET_ESP32
     uint8_t  channelId = 0xFF;    // the peripheral channel the IDF gave us, read back from the GPIO matrix
     uint16_t blockSymbols = 0;    // symbols the channel's memory holds (64 per block)
@@ -216,8 +233,15 @@ void rmtInitOnThisCore(void* arg) {
     txCfg.mem_block_symbols = SOC_RMT_MEM_WORDS_PER_CHANNEL;
     if (rmt_new_tx_channel(&txCfg, &st->channel) != ESP_OK) { job->ok = false; return; }
 
-    rmt_copy_encoder_config_t copyCfg = {};
-    if (rmt_new_copy_encoder(&copyCfg, &st->encoder) != ESP_OK) {
+    // A BYTES encoder, the IDF's own WS2812-shaped one: it expands each wire byte to eight symbols
+    // as it feeds the peripheral, so the caller keeps only the 3-4 bytes per light the correction
+    // produces. The copy encoder this replaces required the caller to pre-expand every bit into a
+    // 32-bit symbol first, 96 bytes per RGB light, which is the buffer that outgrew internal RAM.
+    // The bit timings are placeholders: the driver's `timing` control is live, so
+    // rmtWs2812SetBitTiming rewrites them (rmt_bytes_encoder_update_config) before each frame.
+    rmt_bytes_encoder_config_t bytesCfg = {};
+    bytesCfg.flags.msb_first = 1;          // WS2812 clocks the most significant bit first
+    if (rmt_new_bytes_encoder(&bytesCfg, &st->encoder) != ESP_OK) {
         rmt_del_channel(st->channel); st->channel = nullptr;
         job->ok = false; return;
     }
@@ -272,20 +296,41 @@ uint32_t rmtWs2812Resolution(const RmtWs2812Handle& h) MM_NONBLOCKING {
     return st ? st->resolutionHz : 0;
 }
 
-bool rmtWs2812Transmit(RmtWs2812Handle& h, const uint32_t* symbols, size_t symbolCount) {
+bool rmtWs2812SetBitTiming(RmtWs2812Handle& h, uint32_t sym0, uint32_t sym1) {
     auto* st = static_cast<RmtTxState*>(h.impl);
-    if (!st || !symbols || symbolCount == 0) return false;
+    if (!st || !st->encoder) return false;
+    st->sym0 = sym0; st->sym1 = sym1;
+    // The `timing` control is live (400 kHz WS2811, 800 kHz, custom ns), so the encoder's bit
+    // shapes are rewritten rather than fixed at init.
+    rmt_bytes_encoder_config_t cfg = {};
+    static_assert(sizeof(rmt_symbol_word_t) == sizeof(uint32_t), "symbol word is one 32-bit word");
+    std::memcpy(&cfg.bit0, &sym0, sizeof(uint32_t));
+    std::memcpy(&cfg.bit1, &sym1, sizeof(uint32_t));
+    cfg.flags.msb_first = 1;
+    return rmt_bytes_encoder_update_config(st->encoder, &cfg) == ESP_OK;
+}
+
+bool rmtWs2812Transmit(RmtWs2812Handle& h, const uint8_t* wire, size_t byteCount) {
+    auto* st = static_cast<RmtTxState*>(h.impl);
+    if (!st || !wire || byteCount == 0) return false;
 
 #if CONFIG_IDF_TARGET_ESP32
     if (st->channelId != 0xFF) {
-        // The level-5 path. The symbol buffer must be internal RAM: the refill runs with the
-        // flash cache possibly off, and a PSRAM read there is a fault, not a stall. The driver
-        // allocates internal-first; this is the guard for the fallback case.
-        if (!esp_ptr_internal(symbols)) return false;
+        // The level-5 path expands the bytes itself (rmtHiFill). Those bytes must be internal RAM:
+        // the refill runs with the flash cache possibly off, where a PSRAM read is a fault rather
+        // than a stall. At 3-4 bytes per light that is a few KB even for a long strand, so unlike
+        // the pre-expanded symbol form this does not outgrow internal RAM: issue #94.
+        if (!esp_ptr_internal(wire)) return false;
         RmtHiChannel& c = s_hi[st->channelId];
         if (c.busy) return false;
         const uint8_t ch = st->channelId;
-        c.cur = symbols; c.end = symbols + symbolCount;
+        c.cur = wire; c.end = wire + byteCount;
+        c.sym0 = st->sym0; c.sym1 = st->sym1;
+        // The expander consumes whole BYTES (8 symbols each), so a half-block that is not a
+        // multiple of 8 would leave 1..7 symbols unfilled and end the frame early with no
+        // diagnostic. True for every chip today; asserted so a mem_block_symbols change says so.
+        static_assert(SOC_RMT_MEM_WORDS_PER_CHANNEL % 16 == 0,
+                      "half-block must be a multiple of 8 symbols: rmtHiFill expands whole bytes");
         c.half = st->blockSymbols / 2; c.offset = 0;
         c.busy = true;
         rmt_ll_tx_reset_pointer(&RMT, ch);
@@ -300,13 +345,11 @@ bool rmtWs2812Transmit(RmtWs2812Handle& h, const uint32_t* symbols, size_t symbo
     rmt_transmit_config_t txCfg = {};
     txCfg.loop_count = 0;   // single shot, no hardware loop
 
-    // Our symbols are already rmt_symbol_word_t-shaped; the copy encoder takes a
-    // byte size. This only *starts* the transfer — channels started back-to-back
-    // clock out concurrently, which is what makes a multi-pin frame cost the
-    // longest strand instead of the sum. The caller pairs this with
-    // rmtWs2812Wait and owns the inter-frame latch after the last wait.
-    return rmt_transmit(st->channel, st->encoder, symbols,
-                        symbolCount * sizeof(uint32_t), &txCfg) == ESP_OK;
+    // The bytes encoder expands each byte to eight symbols as it feeds the peripheral, so the wire
+    // bytes go straight out. This only *starts* the transfer: channels started back-to-back clock
+    // out concurrently, which is what makes a multi-pin frame cost the longest strand instead of
+    // the sum. The caller pairs this with rmtWs2812Wait and owns the inter-frame latch.
+    return rmt_transmit(st->channel, st->encoder, wire, byteCount, &txCfg) == ESP_OK;
 }
 
 bool rmtWs2812Wait(RmtWs2812Handle& h, uint32_t timeoutMs) {
@@ -321,12 +364,12 @@ bool rmtWs2812Wait(RmtWs2812Handle& h, uint32_t timeoutMs) {
     // classic ESP32, rmt_disable() while a transmission is still active triggers an
     // interrupt-WDT panic (espressif/esp-idf#17692, classic-only — S3/C6/P4 are
     // unaffected). A panic is a worse failure than a dropped frame, so we leave the
-    // stuck transfer alone. It self-heals safely: the next tick re-encodes symbols_
+    // stuck transfer alone. It self-heals safely: the next tick re-encodes the frame buffer
     // and calls rmt_transmit again; if the channel is still busy, rmt_transmit
     // returns an error, rmtWs2812Transmit returns false, and RmtLedDriver::tick()
     // skips waiting on that channel (its started[] guard) — no crash, no corruption.
     // The RESULT is what the caller needs: a timeout leaves the frame in flight, and re-encoding
-    // into symbols_ next tick would rewrite bytes the peripheral is still clocking out. That is a
+    // into the frame buffer next tick would rewrite bytes the peripheral is still clocking out. That is a
     // silent corruption rather than a dropped frame, and it shows on the strip as a few lights in
     // the wrong color, independent of light count.
 #if CONFIG_IDF_TARGET_ESP32
@@ -703,14 +746,11 @@ RmtLoopbackResult rmtWs2812Loopback(uint8_t txGpio, uint8_t rxGpio) {
     const uint32_t sym1 = static_cast<uint32_t>(kT1H) | (1u << 15)
                         | (static_cast<uint32_t>(kPeriod - kT1H) << 16);
     constexpr size_t kBits = 24;
-    uint32_t txSymbols[kBits];
-    size_t s = 0;
-    for (int b = 0; b < 3; b++)
-        for (int bit = 7; bit >= 0; bit--)
-            txSymbols[s++] = (r.sent[b] & (1u << bit)) ? sym1 : sym0;
+    const uint8_t txWire[3] = { r.sent[0], r.sent[1], r.sent[2] };
 
     RmtWs2812Handle tx;
     if (!rmtWs2812Init(tx, txGpio, kLoopbackResHz, /*invert=*/false)) return r;
+    rmtWs2812SetBitTiming(tx, sym0, sym1);
 
     // RX must be listening while we transmit; run the (blocking) capture in a task
     // and resend the short frame until the receiver latches one or we give up.
@@ -727,7 +767,7 @@ RmtLoopbackResult rmtWs2812Loopback(uint8_t txGpio, uint8_t rxGpio) {
     if (xTaskCreate(rxTask, "rmtlb", 4096, &cap, 5, nullptr) == pdPASS) {
         vTaskDelay(pdMS_TO_TICKS(50));
         for (int i = 0; i < 50 && !cap.done; i++) {
-            rmtWs2812Transmit(tx, txSymbols, kBits);
+            rmtWs2812Transmit(tx, txWire, sizeof(txWire));
             rmtWs2812Wait(tx, 1000);
             ets_delay_us(300);   // inter-frame latch
             vTaskDelay(pdMS_TO_TICKS(10));
@@ -782,33 +822,31 @@ RmtLoopbackResult rmtWs2812LoopbackFrame(uint8_t txGpio, uint8_t rxGpio,
 #endif
     const size_t kBits = static_cast<size_t>(lights) * bitsPerLight;
 
-    // One real frame's worth of symbols, DMA-capable internal RAM (the same
-    // place the driver's own symbol buffer lives). Off the hot path — this is
-    // a control-driven self-test.
-    auto* txSymbols = static_cast<uint32_t*>(heap_caps_malloc(
-        kBits * sizeof(uint32_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
+    // One real frame's worth of WIRE BYTES, DMA-capable internal RAM (the same place the driver's
+    // own frame buffer lives). Off the hot path: a control-driven self-test.
+    const size_t txBytes = static_cast<size_t>(lights) * channels;
+    auto* txWire = static_cast<uint8_t*>(heap_caps_malloc(
+        txBytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
     const size_t capMax = kBits + 16;
     auto* rxSymbols = static_cast<uint32_t*>(heap_caps_aligned_alloc(
         64, capMax * sizeof(uint32_t), MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL));
-    if (!txSymbols || !rxSymbols) {
-        heap_caps_free(txSymbols);
+    if (!txWire || !rxSymbols) {
+        heap_caps_free(txWire);
         heap_caps_free(rxSymbols);
         return r;
     }
     size_t s = 0;
     for (uint16_t light = 0; light < lights; light++)
-        for (uint8_t ch = 0; ch < channels; ch++) {
-            const uint8_t byte = ch < 3 ? r.sent[ch] : 0x00;
-            for (int bit = 7; bit >= 0; bit--)
-                txSymbols[s++] = (byte & (1u << bit)) ? sym1 : sym0;
-        }
+        for (uint8_t ch = 0; ch < channels; ch++)
+            txWire[s++] = ch < 3 ? r.sent[ch] : 0x00;
 
     RmtWs2812Handle tx;
     if (!rmtWs2812Init(tx, txGpio, kLoopbackResHz, /*invert=*/false)) {
-        heap_caps_free(txSymbols);
+        heap_caps_free(txWire);
         heap_caps_free(rxSymbols);
         return r;
     }
+    rmtWs2812SetBitTiming(tx, sym0, sym1);
 
     struct Cap {
         uint8_t rxGpio; uint32_t* buf; size_t max;
@@ -825,7 +863,7 @@ RmtLoopbackResult rmtWs2812LoopbackFrame(uint8_t txGpio, uint8_t rxGpio,
         // Back-to-back frames, the render loop's cadence. The capture latches
         // one whole frame; we keep resending so it can't miss the window.
         for (int i = 0; i < 100 && !cap.done; i++) {
-            rmtWs2812Transmit(tx, txSymbols, kBits);
+            rmtWs2812Transmit(tx, txWire, txBytes);
             rmtWs2812Wait(tx, 1000);
             ets_delay_us(300);   // inter-frame WS2812 latch
         }
@@ -856,7 +894,7 @@ RmtLoopbackResult rmtWs2812LoopbackFrame(uint8_t txGpio, uint8_t rxGpio,
             r.got[b / 8] = static_cast<uint8_t>((r.got[b / 8] << 1) | bit);
         }
     }
-    heap_caps_free(txSymbols);
+    heap_caps_free(txWire);
     heap_caps_free(rxSymbols);
     return r;
 }

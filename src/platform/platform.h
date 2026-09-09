@@ -1012,12 +1012,18 @@ bool rmtWs2812Init(RmtWs2812Handle& h, uint8_t gpio, uint32_t resolutionHz, bool
 // The driver converts its ns timings to ticks with this. 0 if not initialized.
 uint32_t rmtWs2812Resolution(const RmtWs2812Handle& h) MM_NONBLOCKING;
 
-// Start transmitting `symbolCount` pre-encoded WS2812 RMT symbols and return
-// immediately: channels started back-to-back clock out concurrently. Pair with
-// rmtWs2812Wait; the caller owns the inter-frame latch (delayUs) after the last
-// wait. The symbol buffer must stay valid until the wait returns. Returns false
-// when the channel isn't initialized (and on targets without RMT).
-bool rmtWs2812Transmit(RmtWs2812Handle& h, const uint32_t* symbols, size_t symbolCount);
+// Transmit one frame as WIRE BYTES (the corrected, channel-ordered bytes the strip expects).
+// Each byte is expanded to eight symbols on the way to the peripheral, MSB-first, using the bit
+// shapes set by rmtWs2812SetBitTiming: the IDF's bytes encoder does it where RMT has DMA, and the
+// classic ESP32's level-5 refill does it inline. So the caller's resident buffer is 3-4 bytes per
+// light rather than 32 bytes per byte of that (96 per RGB light), which is what let a long strand
+// outgrow internal RAM and silently stop transmitting. On the classic ESP32 the bytes must be in
+// internal RAM (the refill can run with the flash cache off); a few KB, so this is not a limit.
+bool rmtWs2812Transmit(RmtWs2812Handle& h, const uint8_t* wire, size_t byteCount);
+
+// Set the symbols a 0 and a 1 bit expand to. Live: the driver's `timing` control (400 kHz WS2811,
+// 800 kHz, custom) rewrites these between frames.
+bool rmtWs2812SetBitTiming(RmtWs2812Handle& h, uint32_t sym0, uint32_t sym1);
 
 // Block until the channel's in-flight transmission finishes, bounded by
 // `timeoutMs` so a wedged peripheral can't hang the render tick forever: a

@@ -2001,10 +2001,13 @@ bool rmtWs2812Init(RmtWs2812Handle& h, uint8_t /*gpio*/, uint32_t resolutionHz,
 uint32_t rmtWs2812Resolution(const RmtWs2812Handle& h) MM_NONBLOCKING {
     return h.impl ? static_cast<HostRmt*>(h.impl)->resolutionHz : 0;
 }
-bool rmtWs2812Transmit(RmtWs2812Handle& h, const uint32_t* symbols,
-                       size_t symbolCount) {
-    if (!h.impl || !symbols || symbolCount == 0) return false;
+bool rmtWs2812Transmit(RmtWs2812Handle& h, const uint8_t* wire, size_t byteCount) {
+    if (!h.impl || !wire || byteCount == 0) return false;
     return true;
+}
+
+bool rmtWs2812SetBitTiming(RmtWs2812Handle& h, uint32_t /*sym0*/, uint32_t /*sym1*/) {
+    return h.impl != nullptr;   // no peripheral to program off-target
 }
 bool rmtWs2812Wait(RmtWs2812Handle& /*h*/, uint32_t /*timeoutMs*/) { return true; }
 void rmtWs2812Deinit(RmtWs2812Handle& h) {

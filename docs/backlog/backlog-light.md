@@ -41,8 +41,19 @@ What it does NOT address: on the classic ESP32 the DMA half compiles to nothing,
 moves the channel's interrupt off core 0 (the root cause found on the Dig-Next-2, fixed by
 creating the channel from core 1). The two are complementary, one driver with the right answer
 per chip: DMA where the silicon has it, the core-1 refill where it does not. Adopt his DMA and
-callback path, keep the core hop, and drop the classic-only `txInFlight_` guard where his busy
-flag covers it. Study, do not copy: write it against the seam as it stands, credit the branch.
+callback path and keep the core hop. Study, do not copy: write it against the seam as it stands,
+credit the branch.
+
+Re-read against the wire-byte driver (2026-09-09), which changed two of the assumptions above. The
+driver no longer holds pre-expanded symbols at all: it ships the correction's wire bytes and the
+peripheral expands them (IDF bytes encoder on the DMA chips, the level-5 refill on classic), so the
+frame buffer is ~3 bytes per light rather than 96. So (a) his `mem_block_symbols = 1024` is now the
+only symbol memory in play and is cheap, and (b) `rmt_transmit` already takes the bytes, so the DMA
+path needs no buffer change, only `flags.with_dma` plus the callback. The `txInFlight_` guard STAYS
+whatever happens: the peripheral streams straight out of the driver's frame buffer, so a rebuild
+that frees it mid-frame still tears; his busy flag would replace the blocking wait, not that guard.
+The win left on the table is the blocking `rmtWs2812Wait` on S3/P4, which today costs the tick the
+whole wire time of the longest strand.
 
 ### A script's setControl rebuilds a control subtree on every write (2026-09-06)
 
@@ -217,6 +228,23 @@ A recurring idea is to "borrow from direct mode": direct mode streams a huge fra
 The bandwidth arithmetic (datasheet-derived): DMA demand = bus-bytes × pclk. Direct 8/16-bit = 2.67/5.33 MB/s; shift 8/16-bit = **26.7 / 53.3 MB/s**. S3 OPI PSRAM (octal, 80 MHz DDR) is 160 MB/s *theoretical* but only **~40–84 MB/s sustained/contended** in practice (Espressif's external-RAM guide: DMA-to-PSRAM bandwidth "is very limited, especially when the core is trying to access external RAM at the same time"; PSRAM shares the flash cache region). So direct demand sits far under the floor (streams fine — proven), while shift 16-bit demand *exceeds* the ~40 MB/s contended floor and shift 8-bit sits inside the underrun zone once WiFi/HTTP/CPU cache traffic competes. Because WS2812 is one unbroken self-clocked stream, one FIFO underrun garbles the rest of the frame. This is **datasheet-consistent with**, and MEASURED to match, ADR-0014's controlled A/B (board B, same PSRAM/chain, only the clock varied: 2.67 MHz PSRAM drives, 26.67 MHz PSRAM never completes at any size) and the 2026-07-16 `forceRing` re-confirmation (whole-frame at 2880 stalls). **Proven:** the effect (PSRAM stalls at the shift clock, drives at the direct clock). **Not instrumented (needs a bench measurement if ever doubted):** the exact mechanism — contended-sustained-rate FIFO underrun vs PSRAM read latency vs cache/MMU contention — was inferred from the clock being the sole variable, never isolated with underrun/bandwidth counters.
 
 **Conclusion — this does not open a new path; the proper ring fix already is the path.** The internal-RAM footprint of the ring is NOT set by light count: the ring transposes from a PSRAM-resident source into a small fixed internal buffer pool, so PSRAM is never on the DMA's read path at all. The 240-light wall is the `kRingBufs=16` no-reuse stopgap (the wrap read-while-write race), NOT the ring's design — and "more buffers" is a confirmed dead end. The shipped ring (above) holds internal RAM constant at arbitrary light count, which is exactly the "unlimited lights/strand" the PSRAM-hybrid idea was reaching for — obtained the correct way, at the mandatory shift clock, without PSRAM on the read path. **Action: none — the ring shipped; the "lower shift pclk + PSRAM whole-frame" hybrid is closed as physically blocked and should not be re-attempted.** (If the mechanism is ever contested, the one bench measurement worth doing is registering GDMA underrun/FIFO-empty counters at 26.67 MHz whole-frame-PSRAM to distinguish underrun from latency — but it would not change the conclusion.)
+
+### The ring's memory readout counts one buffer, not the pool (CodeRabbit, 2026-09-09)
+
+`ParallelLedDriver::driverHeapBytes()` derives its DMA figure from `peripheral_->busCapacity()`,
+which is `st->cap`: the size of ONE buffer. It then adds a second when `busBuffer(1)` exists, which
+is right for the double-buffered path and wrong for the ring, where `createRingState` allocates
+`ringBufs` slices (up to 30 at the 48x256 geometry) plus the shared zero-pad. So a ring board
+under-reports its DMA memory by roughly the buffer count, on the card that exists to make exactly
+that number visible.
+
+Not a correctness bug: the memory is spent either way, and nothing sizes an allocation from this
+value. It is a reporting bug in the one readout a user consults before adding lights.
+
+**What it takes:** an aggregate size on the peripheral (the ring knows `ringBufs * bufBytes + pad`
+at creation) rather than arithmetic in the driver, which cannot see the pool. Wants a ring-mode
+accounting test alongside, since the existing ones only cover the non-ring path. Touching
+`createRingState` means a bench pass on the wall, which is why this is its own change.
 
 ### MoonI80 ring — boot / first-frame-after-rebuild trips a transient give-up status (2026-07-16)
 
@@ -880,10 +908,23 @@ but makes the picker unreadable as the list grows, which is the trade the sort w
 
 ## Move the remaining board entries off RmtLedDriver (2026-09-08)
 
-`RmtLedDriver` expands every bit into a 32-bit hardware symbol, so its buffer costs
-**lights x channels x 8 x 4 = 96 bytes per light**. `ParallelLedDriver` bit-bangs the lanes through
-one I2S/LCD_CAM transfer and costs **384 bytes flat**, independent of pin count and light count.
-Measured on the bench, same hardware and same light count either side:
+**Superseded on 2026-09-09, and the memory half of this item no longer applies.** `RmtLedDriver`
+now ships the correction's WIRE BYTES and lets the peripheral expand them (the IDF bytes encoder on
+the DMA chips, the level-5 refill on classic), so its buffer is `lights x channels` = 3 bytes per
+RGB light and 4 for RGBW, flat in the expansion. Bench, Dig-Next-2 at 1,024 lights: 3,075 bytes
+against 98,307 under the old form, a 32x cut. Dig-2-Go at 341 lights: 32,772 bytes to 1,028, which
+handed 33 KB of internal RAM back to the system. The crossover below is therefore gone,
+RMT is now the cheaper driver at every light count, and the reason to move a board off it is
+throughput or pin count rather than memory.
+
+The rest of this entry is kept as the record of why the swaps that were already made were made.
+
+Historically `RmtLedDriver` expanded every bit into a 32-bit hardware symbol, so its buffer cost
+`lights x channels x 8 x 4`: **96 bytes per RGB light, 128 for a 4-channel RGBW or GRBW preset**,
+since `channels` is the preset's output width rather than a constant.
+`ParallelLedDriver` bit-bangs the lanes through one I2S/LCD_CAM transfer and costs **384 bytes
+flat**, independent of pin count and light count. Measured on the bench, same hardware and same
+light count either side:
 
 | Board | Lights | RmtLed | ParallelLed | FPS |
 |---|---|---|---|---|
@@ -897,9 +938,10 @@ Both those entries are switched. **Twenty entries still specify `RmtLedDriver`**
 should stay that way: measured on the QuinLED Dig-2-Go (one lane, 256 lights, no PSRAM), the swap
 CUT the driver's own readout from 32,772 to 512 bytes and LOST 49 KB of free heap (96,552 to
 47,156, steady after a reboot). The i80 DMA frame is sized by the bus width, not the pins in use, so
-a one-lane board pays the same ~50 KB as an eight-lane one, while RMT costs 96 bytes per light. The
-crossover is around 500 lights: below it RMT is cheaper, above it ParallelLed is. (That fixed frame
-was invisible on the card until `driverHeapBytes()` started counting it.)
+a one-lane board pays the same ~50 KB as an eight-lane one, while RMT cost 96 bytes per RGB light
+(128 for RGBW). The crossover was around 500 RGB lights, and lower for a 4-channel preset. (That
+fixed frame was invisible on the card until `driverHeapBytes()` started counting it.) Both numbers
+are historical: see the note at the top of this entry.
 
 For the boards where it does pay, the blocker is not the driver: it is that each one needs a **DC
 pin chosen against that board's real pinout**, and picking one blind is how a peripheral lands on a

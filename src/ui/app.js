@@ -2812,7 +2812,7 @@ function createControl(moduleName, moduleType, ctrl) {
             row.appendChild(input);
             break;
         }
-        case "filepath": return buildFilePathControl(row, label, key, v, moduleName, ctrl);
+        case "filepath": return buildFilePathControl(row, label, key, moduleName, ctrl);
         case "password": {
             // ctrl.value arrives XOR-obfuscated + base64-encoded (see
             // HttpServerModule PASSWORD_XOR_KEY). Decode it so the input holds
@@ -4502,7 +4502,11 @@ function updateModuleControls(mod) {
     if (syncVisibleControls(mod)) return;  // re-rendered: values are fresh, skip patch
 
     for (const ctrl of mod.controls) {
-        const mid = cssEscape(mod.name);
+        // RAW, not escaped: every selector below escapes it itself, and queryByName compares this
+        // against the data-mid ATTRIBUTE, which the DOM returns unescaped. Escaping here made the
+        // comparison fail for any module name that needs escaping (a quote or a backslash), so the
+        // live patch silently found nothing and that card stopped updating.
+        const mid = mod.name;
         const k = cssEscape(ctrl.name);
         const dragKey = mod.name + ":" + ctrl.name;
         const ts = dragTs[dragKey] || 0;
@@ -7179,7 +7183,7 @@ function buildPaletteControl(row, key, def, moduleName, ctrl) {
 /// The script picker: the file list, the inline editor, and the fork handling that decides
 /// whether a save shadows a shipped script. The largest single control by far, and the reason
 /// createControl had grown to 1252 lines.
-function buildFilePathControl(row, label, key, v, moduleName, ctrl) {
+function buildFilePathControl(row, label, key, moduleName, ctrl) {
     // A file NAME plus an editor for that file's contents. The value travels through
     // /api/control like any text control; the BODY never does (it cannot: only /api/file
     // may exceed the request buffer), so the pane below reads and writes it directly.

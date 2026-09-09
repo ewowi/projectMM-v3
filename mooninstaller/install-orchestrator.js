@@ -448,6 +448,27 @@ async function releaseDetected() {
     try { await port.close(); } catch (_) { /* already closed */ }
 }
 
+/// Overall flash progress across ALL images, 0-100.
+///
+/// esptool-js reports per FILE: `written`/`total` restart at zero for each image, and an install
+/// writes several (bootloader, partition table, ota data, app, and MoonBase where the layout has
+/// one). Plotting that raw ran the bar 0-100% once per image, so a user watched it reach 100% and
+/// start again (bench 2026-09-08, a Shelly on the public installer). Weighting each file by its
+/// size against the whole write makes the bar cross the modal exactly once.
+///
+/// `sizes` is the byte length of each image, in the order esptool-js writes them.
+export function flashPercent(sizes, idx, written, total) {
+    const all = Array.isArray(sizes) ? sizes.map(n => (typeof n === "number" && n > 0 ? n : 0)) : [];
+    const grand = all.reduce((a, b) => a + b, 0);
+    if (grand <= 0) return 0;
+    const done = all.slice(0, Math.max(0, idx)).reduce((a, b) => a + b, 0);
+    // `written`/`total` are this file's own bytes; fall back to zero for this file when total is
+    // missing, so a bad tick can never push the bar backwards past what is already written.
+    const here = total > 0 ? (written / total) * (all[idx] || 0) : 0;
+    const pct = Math.round(100 * (done + here) / grand);
+    return pct < 0 ? 0 : pct > 100 ? 100 : pct;
+}
+
 export const installer = {
     /**
      * Drive the full install flow: request port, flash via esptool-js,
@@ -759,7 +780,8 @@ export const installer = {
                 flashSize: "keep",
                 compress: true,
                 reportProgress: (idx, written, total) => {
-                    const pct = total > 0 ? Math.round(100 * written / total) : 0;
+                    const pct = flashPercent(fileArray.map(f => (f.data && f.data.length) || 0),
+                                             idx, written, total);
                     // Don't bump lastStage on every progress tick — keep it as
                     // "flash" set just above; intermediate ticks are detail only.
                     onProgress("flash", { pct, fileIdx: idx });
@@ -805,16 +827,31 @@ export const installer = {
             //
             // Some USB-serial chips (rare CH340 silicon revisions, mis-driven
             // adapters) don't survive the close+reopen cleanly — the OS handle
-            // ends up stale and port.open() throws. Catch that and prompt for
-            // a fresh requestPort(); the browser's permission grant from the
-            // earlier requestPort means it surfaces a picker but no auth
-            // dialog. User picks the same physical port; we get a fresh
-            // SerialPort handle. Slightly worse UX (extra click) than the
-            // transparent reopen, but never silently fails.
+            // ends up stale and port.open() throws. Catch that and get a fresh
+            // SerialPort handle.
+            //
+            // requestPort() needs a USER GESTURE, and by this point there is none: the
+            // flash took tens of seconds, so the click that opened the modal is long
+            // expired and Chrome refuses with "Must be handling a user gesture to show a
+            // permission request" (bench 2026-09-08, a Shelly on the public installer).
+            // The browser's earlier permission grant does not help: it covers ACCESS to
+            // the port, not the right to show the picker. So ask the user to click first,
+            // exactly as the wrong-port path above does, and call requestPort() inside
+            // that click. Without the callback (an older host page) there is nothing to
+            // click, so report the real reason rather than throwing a browser message
+            // that reads like a bug in the installer.
             try {
                 await port.open({ baudRate: 115200 });
             } catch (openErr) {
-                if (onLog) onLog(`[orchestrator] port.open() failed (${openErr.message}); falling back to requestPort()`);
+                if (onLog) onLog(`[orchestrator] port.open() failed (${openErr.message}); asking for a fresh port`);
+                if (!uiWaitForPortRetry) {
+                    throw new Error(
+                        "the serial port did not survive the flash and the page cannot re-prompt for it; " +
+                        "unplug and replug the device, then install again");
+                }
+                trackProgress("wrong-port-retry");
+                await uiWaitForPortRetry();
+                trackProgress("request-port");
                 port = await navigator.serial.requestPort({});
                 await port.open({ baudRate: 115200 });
             }

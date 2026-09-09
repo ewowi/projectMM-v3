@@ -1128,9 +1128,17 @@ def _read_usb_ports() -> dict:
         return {}
     import re
     try:
-        out = subprocess.run(
+        # BYTES, then a lenient decode. `ioreg -l` dumps every property in the registry, including
+        # raw device data that is not text at all, so a strict UTF-8 decode raises
+        # UnicodeDecodeError on whatever happens to be attached: on the bench it fired on every
+        # /api/ports request while boards were connected, and since UnicodeDecodeError is neither
+        # OSError nor SubprocessError it escaped this handler and 500'd the request, leaving
+        # MoonDeck's port dropdown empty with boards plugged in. The parse below only ever reads
+        # ASCII keys, so replacing the undecodable bytes costs nothing and keeps the listing.
+        raw = subprocess.run(
             ["ioreg", "-l", "-w0"],
-            capture_output=True, text=True, timeout=5).stdout
+            capture_output=True, timeout=5).stdout
+        out = raw.decode("utf-8", "replace")
     except (OSError, subprocess.SubprocessError):
         return {}
     # The IORegistry is a tree: a USB device node holds the descriptor

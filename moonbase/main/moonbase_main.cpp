@@ -483,10 +483,18 @@ const char kPage[] =
     "return (r.assets||[]).map(a=>a.name).filter(n=>/^firmware-.+\\.bin$/.test(n)"
     "&&!/-(bootloader|partition-table|ota-data|slot0)\\.bin$/.test(n)"
     // The chip must match to a BOUNDARY: "esp32s31" starts with "esp32s3" and is different
-    // silicon, so a plain prefix test offered an S31 image on an S3 board. Every asset spells the
+    // silicon, so a plain prefix test offered an S31 image on an S3 board. Most assets spell the
     // chip then a hyphen, whether a variant follows ("esp32s3-zero-v...") or the version does
-    // ("esp32-v..."), so requiring that hyphen is the whole rule.
-    "&&n.slice(9).startsWith(CHIP)&&n.slice(9+CHIP.length).startsWith('-')"
+    // ("esp32-v..."), so requiring that hyphen is the rule.
+    //
+    // The P4 is the exception: CONFIG_IDF_TARGET is "esp32p4" while every asset carries the
+    // SILICON REVISION in the same token ("esp32p4rev1-eth-v..."), so the character after the chip
+    // is a digit-bearing "rev", not a hyphen. Requiring the hyphen alone left a P4 in MoonBase with
+    // an EMPTY firmware list, which is the one place a user has no other way to install. Accept
+    // "rev<digit>" as an alternative boundary: it keeps the s3/s31 separation (nothing spells
+    // "esp32s3rev") while matching every P4 asset we publish.
+    "&&n.slice(9).startsWith(CHIP)"
+    "&&(n.slice(9+CHIP.length).startsWith('-')||/^rev\\d/.test(n.slice(9+CHIP.length)))"
     "&&(!VAR||n.slice(9).startsWith(VAR+'-')));}"
     "function fillFw(){const f=document.getElementById('fw');f.innerHTML='';"
     "const l=fwList(document.getElementById('rel').selectedIndex);"
