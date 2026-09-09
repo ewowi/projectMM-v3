@@ -61,15 +61,26 @@ CONFIG_ETH_DMA_TX_BUFFER_NUM=10
 CONFIG_ESP_SYSTEM_MEMPROT_FEATURE=n
 CONFIG_HEAP_HAS_EXEC_HEAP=y
 
-# esp-dsp's PORTABLE C kernels instead of its hand-written P4 assembly. The assembly FFT uses the
-# P4's hardware-loop instruction (esp.lp.setup), and that unit carries a documented erratum -
-# Espressif's own soc_caps: SOC_CPU_HAS_HWLOOP_STATE_BUG, "HWLOOP state doesn't go to DIRTY after
-# executing the last instruction of a loop". FreeRTOS saves those registers lazily, keyed on that
-# DIRTY flag, so a task switched out of the FFT has its loop state silently dropped and faults on
-# resume (bench: a crash loop the moment HLS added a second task, Illegal instruction / Load
-# access fault inside dsps_fft2r_fc32_arp4.S). IDF patches the erratum on the coprocessor RESTORE
-# paths but not on SAVE. Measured cost of the portable kernels: audio tick ~615 us -> ~658 us.
-# A WORKAROUND, not a fix: esp-idf#19025 (ours, naming the unguarded save path) and esp-dsp#119
-# (the same fault from another reporter, on IDF v5.5-beta1). Remove once upstream answers.
-# Lives in the board fragment because every P4 image (rev1/rev3, eth/eth-wifi) layers on it.
-CONFIG_DSP_ANSI=y
+# esp-dsp's OPTIMIZED P4 assembly kernels: the default, and what we ship. The line below forces
+# the portable C kernels instead and is currently OFF.
+#
+# Why it exists at all. The assembly FFT uses the P4's hardware-loop instruction (esp.lp.setup),
+# and that unit carries a documented erratum - Espressif's own soc_caps:
+# SOC_CPU_HAS_HWLOOP_STATE_BUG, "HWLOOP state doesn't go to DIRTY after executing the last
+# instruction of a loop". FreeRTOS saves those registers lazily, keyed on that DIRTY flag, so a
+# task switched out of the FFT has its loop state silently dropped and faults on resume (bench:
+# a crash loop the moment HLS added a second task, Illegal instruction / Load access fault inside
+# dsps_fft2r_fc32_arp4.S). IDF patches the erratum on the coprocessor RESTORE paths but not on
+# SAVE. Cost of the portable kernels: audio tick ~615 us -> ~658 us.
+# Tracked in esp-idf#19025 (ours, naming the unguarded save path) and esp-dsp#119 (the same fault
+# from another reporter, on IDF v5.5-beta1).
+#
+# Off since 2026-09-08: the crash no longer reproduces on the bench (P4 v1.3, IDF v6.1-rc1, audio
+# FFT running with HLS as the second task, ~20 min under load). Espressif could not reproduce it
+# either, on a v1.2. The erratum and the unguarded save path are BOTH still there, so this is a
+# watch, not a fix: the optimized kernels are the desired config and we run them to see whether
+# they stay stable. Re-enable the line if the fault returns.
+# Ruled OUT as the cause of the P4 shield's 22 s reboot loop the same day: putting it back changed
+# nothing (3 reboots in 70 s against 4), which is what a blocked network cascade looks like, not an
+# FFT fault. Lives in the board fragment because every P4 image (rev1/rev3, eth/eth-wifi) layers on it.
+# CONFIG_DSP_ANSI=y

@@ -117,7 +117,7 @@ test("every function on the patch path is covered by this file", () => {
     const checked = ["updateValues", "updateModuleControls", "updateStatusBar", "applyTabDot",
                      "updateTabDot", "setText", "setUrlDisplay", "setStatusText"];
     const keywords = ["if", "for", "while", "switch", "catch", "return", "typeof"];
-    const dom = ["querySelector", "querySelectorAll", "createElement", "appendChild",
+    const dom = ["querySelector", "querySelectorAll", "queryByName", "createElement", "appendChild",
                  "insertBefore", "toggle", "setAttribute", "getAttribute", "remove", "closest",
                  "matches", "getSelection", "String", "Number", "Array", "Math", "JSON"];
     const body = functionBody("updateValues");

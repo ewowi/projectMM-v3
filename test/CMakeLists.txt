@@ -42,12 +42,14 @@ add_executable(mm_tests
     unit/core/unit_FilesystemModule_subtree.cpp
     unit/core/unit_FirmwareUpdateModule.cpp
     unit/core/unit_FirmwareImage.cpp
+    unit/core/unit_AllocTracking.cpp
     unit/core/unit_HttpServerModule_apply.cpp
     unit/core/unit_ImprovFrame.cpp
     unit/core/unit_ImprovOpReassembler.cpp
     unit/core/unit_JsonUtil_parse.cpp
     unit/core/unit_JsonUtil_parseint.cpp
     unit/core/unit_JsonSink_detach.cpp
+    unit/core/unit_JsonSink_overflow.cpp
     unit/core/unit_MappingLUT.cpp
     unit/core/unit_ModuleFactory.cpp
     unit/core/unit_moonlive_fill.cpp

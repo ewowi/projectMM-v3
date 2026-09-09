@@ -201,18 +201,60 @@ uint32_t micros() MM_NONBLOCKING {
 #pragma clang diagnostic pop
 #endif
 
+// WHAT THIS PROCESS HAS DELIBERATELY ALLOCATED, in bytes. Not a heap figure: a desktop has as much
+// memory as it wants, and freeHeap() keeps reporting 0 because three call sites read that 0 as
+// "unlimited" and switch off gates that only mean something on a device (polar.h's LUT budget,
+// MappingLUT's paging fallback).
+//
+// What it IS good for is the DELTA. Every buffer the system takes on purpose (layer buffers,
+// mapping LUTs, script arenas, driver rings) comes through alloc/allocInternal, so adding or
+// removing a module moves this number by exactly what that module costs, on a laptop, in a second,
+// with no board attached. The process's own RSS cannot answer that: the allocator, the JIT and the
+// HTTP buffers move it too, and a 100 KB layer would be lost in the noise.
+//
+// The REQUESTED size is recorded rather than malloc's rounded one (malloc_size reports 1024 for a
+// 1000-byte ask), so a reported delta is the number the caller asked for.
+std::atomic<size_t> g_allocatedBytes{0};
+std::atomic<size_t> g_allocatedPeak{0};
+std::atomic<uint32_t> g_allocCount{0};
+
+namespace {
+// Requested size, kept immediately before the block handed out. 16 bytes rather than 8 so the
+// returned pointer keeps the alignment malloc promised for any type.
+constexpr size_t kAllocHeader = 16;
+
+void* trackedAlloc(size_t bytes) {
+    void* raw = std::malloc(bytes + kAllocHeader);
+    if (!raw) return nullptr;
+    *static_cast<size_t*>(raw) = bytes;
+    const size_t now = g_allocatedBytes.fetch_add(bytes, std::memory_order_relaxed) + bytes;
+    // Peak is advisory, so a lost race between two threads costs a slightly low high-water mark
+    // rather than anything a caller depends on.
+    if (now > g_allocatedPeak.load(std::memory_order_relaxed))
+        g_allocatedPeak.store(now, std::memory_order_relaxed);
+    g_allocCount.fetch_add(1, std::memory_order_relaxed);
+    return static_cast<uint8_t*>(raw) + kAllocHeader;
+}
+}  // namespace
+
 void* alloc(size_t bytes) {
-    return std::malloc(bytes);
+    return trackedAlloc(bytes);
 }
 
 bool ptrIsPsram(const void* /*p*/) { return false; }   // desktop has no PSRAM
 
 void* allocInternal(size_t bytes) {
-    return std::malloc(bytes);   // desktop has one flat RAM — internal == ordinary
+    return trackedAlloc(bytes);   // desktop has one flat RAM: internal == ordinary
 }
 
 void free(void* ptr) {
-    std::free(ptr);
+    if (!ptr) return;
+    void* raw = static_cast<uint8_t*>(ptr) - kAllocHeader;
+    g_allocatedBytes.fetch_sub(*static_cast<size_t*>(raw), std::memory_order_relaxed);
+    // Decremented, so the count is LIVE blocks and not allocations-ever. Without this it only
+    // climbed, which reads as a leak on any device left running.
+    g_allocCount.fetch_sub(1, std::memory_order_relaxed);
+    std::free(raw);
 }
 
 // Executable memory for MoonLive's emitted code. macOS on Apple Silicon enforces W^X
@@ -301,6 +343,10 @@ void pauseLoop() {
     if (spent < kFrameBudget) std::this_thread::sleep_for(kFrameBudget - spent);
     lastWake = std::chrono::steady_clock::now();
 }
+
+size_t allocatedBytes() { return g_allocatedBytes.load(std::memory_order_relaxed); }
+size_t allocatedPeak()  { return g_allocatedPeak.load(std::memory_order_relaxed); }
+uint32_t allocatedCount() { return g_allocCount.load(std::memory_order_relaxed); }
 
 size_t freeHeap() {
     return 0; // Not meaningful on desktop (0 = unlimited)
@@ -1384,7 +1430,7 @@ int wifiStaRssi() { return 0; }
 void wifiStaBssid(uint8_t out[6]) { std::memset(out, 0, 6); }
 int wifiStaChannel() { return 0; }
 
-bool wifiApInit(const char* /*apName*/, const char* /*ip*/) { return false; }
+bool wifiApInit(const char* /*apName*/, const char* /*ip*/) { return false; }   // no AP on a host
 bool wifiApConnected() { return false; }
 void wifiApStop() {}
 uint32_t wifiApClientCount() { return 0; }
@@ -1955,10 +2001,13 @@ bool rmtWs2812Init(RmtWs2812Handle& h, uint8_t /*gpio*/, uint32_t resolutionHz,
 uint32_t rmtWs2812Resolution(const RmtWs2812Handle& h) MM_NONBLOCKING {
     return h.impl ? static_cast<HostRmt*>(h.impl)->resolutionHz : 0;
 }
-bool rmtWs2812Transmit(RmtWs2812Handle& h, const uint32_t* symbols,
-                       size_t symbolCount) {
-    if (!h.impl || !symbols || symbolCount == 0) return false;
+bool rmtWs2812Transmit(RmtWs2812Handle& h, const uint8_t* wire, size_t byteCount) {
+    if (!h.impl || !wire || byteCount == 0) return false;
     return true;
+}
+
+bool rmtWs2812SetBitTiming(RmtWs2812Handle& h, uint32_t /*sym0*/, uint32_t /*sym1*/) {
+    return h.impl != nullptr;   // no peripheral to program off-target
 }
 bool rmtWs2812Wait(RmtWs2812Handle& /*h*/, uint32_t /*timeoutMs*/) { return true; }
 void rmtWs2812Deinit(RmtWs2812Handle& h) {

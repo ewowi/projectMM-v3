@@ -74,6 +74,19 @@ void free(void* ptr);
 // Free with the ordinary free().
 void* allocInternal(size_t bytes);
 
+/// How many bytes this process has deliberately allocated through alloc/allocInternal, and the
+/// high-water mark. NOT a heap figure: freeHeap() stays 0 on desktop because callers read that as
+/// "unlimited" and switch off gates that only mean something on a device.
+///
+/// The point is the DELTA. Every buffer the system takes on purpose comes through this seam, so
+/// adding or removing a module moves these by exactly that module's cost, measurable on a laptop
+/// without a board. On ESP32 they report the same thing from the real heap, so a scenario reads one
+/// number on both. `count` is the number of live blocks, which separates "one buffer got bigger"
+/// from "something is allocating per frame".
+size_t allocatedBytes();
+size_t allocatedPeak();
+uint32_t allocatedCount();
+
 // True when the pointer resolves to external (PSRAM) memory: the standard residency probe (IDF's
 // esp_ptr_external_ram). Diagnostic companion to allocInternal's internal-first-PSRAM-fallback pattern:
 // the caller of that pattern cannot otherwise tell which way an allocation landed, and for buffers an
@@ -999,12 +1012,18 @@ bool rmtWs2812Init(RmtWs2812Handle& h, uint8_t gpio, uint32_t resolutionHz, bool
 // The driver converts its ns timings to ticks with this. 0 if not initialized.
 uint32_t rmtWs2812Resolution(const RmtWs2812Handle& h) MM_NONBLOCKING;
 
-// Start transmitting `symbolCount` pre-encoded WS2812 RMT symbols and return
-// immediately: channels started back-to-back clock out concurrently. Pair with
-// rmtWs2812Wait; the caller owns the inter-frame latch (delayUs) after the last
-// wait. The symbol buffer must stay valid until the wait returns. Returns false
-// when the channel isn't initialized (and on targets without RMT).
-bool rmtWs2812Transmit(RmtWs2812Handle& h, const uint32_t* symbols, size_t symbolCount);
+// Transmit one frame as WIRE BYTES (the corrected, channel-ordered bytes the strip expects).
+// Each byte is expanded to eight symbols on the way to the peripheral, MSB-first, using the bit
+// shapes set by rmtWs2812SetBitTiming: the IDF's bytes encoder does it where RMT has DMA, and the
+// classic ESP32's level-5 refill does it inline. So the caller's resident buffer is 3-4 bytes per
+// light rather than 32 bytes per byte of that (96 per RGB light), which is what let a long strand
+// outgrow internal RAM and silently stop transmitting. On the classic ESP32 the bytes must be in
+// internal RAM (the refill can run with the flash cache off); a few KB, so this is not a limit.
+bool rmtWs2812Transmit(RmtWs2812Handle& h, const uint8_t* wire, size_t byteCount);
+
+// Set the symbols a 0 and a 1 bit expand to. Live: the driver's `timing` control (400 kHz WS2811,
+// 800 kHz, custom) rewrites these between frames.
+bool rmtWs2812SetBitTiming(RmtWs2812Handle& h, uint32_t sym0, uint32_t sym1);
 
 // Block until the channel's in-flight transmission finishes, bounded by
 // `timeoutMs` so a wedged peripheral can't hang the render tick forever: a

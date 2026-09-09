@@ -54,6 +54,7 @@ TYPE_ERROR_STATE = 0x02
 TYPE_RPC = 0x03
 TYPE_RPC_RESPONSE = 0x04
 CMD_WIFI_SETTINGS = 0x01
+CMD_GET_CURRENT_STATE = 0x02
 
 
 def checksum(buf: bytes) -> int:
@@ -203,6 +204,146 @@ def self_test() -> int:
     return 0
 
 
+# --- Device-model config push: "Improv = REST over serial" -----------------------------
+#
+# The device applies a catalog entry through ONE vendor RPC, APPLY_OP (0xFC), carrying one
+# REST operation as JSON per frame sequence: the same {"op":"add"|"set"|"clearChildren"} shapes
+# the HTTP API takes. The browser installer plans the op sequence in mooninstaller/config-ops.js
+# and sends it open-loop (Web Serial cannot read the ack while it holds the writer). This is a
+# faithful port of that planner, and the sender is CLOSED-loop: the device acks every frame
+# with an RPC_RESPONSE, or answers ERROR 0x82 while its single op buffer is still busy, which
+# means "send that frame again". So a slow tick never drops an op here.
+#
+# Until 2026-09-08 this script sent a vendor RPC that no firmware has ever handled, then
+# printed "pushed": three boards were provisioned with WiFi and nothing else while the script
+# claimed success. The op sequence below is what the browser was doing all along.
+
+IMPROV_CMD_APPLY_OP = 0xFC
+IMPROV_ERROR_INVALID_OP = 0x82       # device: op buffer busy, retry this frame
+APPLY_OP_CHUNK_MAX = 128 - 3         # kImprovMaxPayload minus the [cmd][seq][last] header
+
+
+def is_eth_only(entry) -> bool:
+    """An entry whose firmware is an Ethernet-only build (`-eth`, not `-eth-wifi`) has WiFi
+    compiled out and no WIFI_SETTINGS RPC to answer: provisioning is plugging the cable in.
+    Mirrors install.js (`ethOnly = /-eth$/.test(firmware)`) so the two front ends agree."""
+    fws = entry.get("firmwares") if isinstance(entry, dict) else None
+    return bool(fws) and all(isinstance(f, str) and f.endswith("-eth") for f in fws)
+
+
+def _is_addable(m) -> bool:
+    """A module the entry ADDS: a non-empty id, a parent to add it under, and a type."""
+    return (isinstance(m, dict)
+            and isinstance(m.get("id"), str) and bool(m.get("id"))
+            and isinstance(m.get("parent_id"), str) and bool(m.get("parent_id"))
+            and bool(m.get("type")))
+
+
+def plan_config_ops(entry) -> list:
+    """The ordered APPLY_OP sequence for a catalog entry: mirrors config-ops.js exactly.
+
+    clearChildren pre-pass (every parent the entry adds into, plus any container flagged
+    replaceChildren, unless that parent is itself added fresh), then per module an add, then its
+    control sets. The clear pass is what makes a re-provision converge on a NON-erased device:
+    add is idempotent on id, so without it a stale module lingers and a structural change never
+    lands.
+
+    Catalog order is preserved, and it matters on boards whose LED pins include GPIO 1/3
+    (UART0): the op that sets those pins ends serial reception, so every op after it is lost.
+    Such an entry lists its LED driver LAST. (Bench 2026-09-08, QuinLED Dig-Uno / Dig-Quad.)
+    """
+    ops = []
+    modules = entry.get("modules") if isinstance(entry, dict) else None
+    modules = modules if isinstance(modules, list) else []
+    added_ids = {m["id"] for m in modules if _is_addable(m)}
+    clear_parents = []                       # insertion-ordered, deduped
+    for m in modules:
+        if not isinstance(m, dict):
+            continue
+        if m.get("replaceChildren") and isinstance(m.get("id"), str) and m["id"]:
+            if m["id"] not in clear_parents:
+                clear_parents.append(m["id"])
+        if _is_addable(m) and m["parent_id"] not in clear_parents:
+            clear_parents.append(m["parent_id"])
+    for parent in clear_parents:
+        if parent in added_ids:
+            continue
+        ops.append({"op": "clearChildren", "parent": parent})
+    for m in modules:
+        if not isinstance(m, dict) or not isinstance(m.get("id"), str) or m["id"] == "":
+            continue
+        if _is_addable(m):
+            ops.append({"op": "add", "type": m["type"], "id": m["id"], "parent": m["parent_id"]})
+        controls = m.get("controls")
+        if isinstance(controls, dict):
+            for control, value in controls.items():
+                ops.append({"op": "set", "module": m["id"], "control": control, "value": value})
+    return ops
+
+
+def encode_apply_op_frames(op: dict) -> list:
+    """One op -> the Improv RPC frames carrying it: [0xFC][seq][last][chunk], chunk <= 125 B."""
+    import json
+    body = json.dumps(op, separators=(",", ":")).encode("utf-8")
+    chunks = [body[i:i + APPLY_OP_CHUNK_MAX] for i in range(0, len(body), APPLY_OP_CHUNK_MAX)] or [b""]
+    frames = []
+    for seq, chunk in enumerate(chunks):
+        last = 1 if seq == len(chunks) - 1 else 0
+        frames.append(build_frame(TYPE_RPC, bytes([IMPROV_CMD_APPLY_OP, seq, last]) + chunk))
+    return frames
+
+
+def send_apply_op(ser, op: dict, ack_timeout: float = 2.0, retries: int = 20) -> bool:
+    """Send one op closed-loop: every frame must be acked; a busy device (ERROR 0x82) gets the
+    same frame again after a short pause. Returns False when a frame is refused for any other
+    reason or never acked."""
+    for frame in encode_apply_op_frames(op):
+        for attempt in range(retries):
+            ser.write(frame)
+            ser.flush()
+            # Wait for THIS frame's verdict. The device also volunteers CURRENT_STATE frames
+            # (it is still announcing PROVISIONED right after the credentials), and those are
+            # not a reply to us: skip them rather than reading one as a refusal, which is how
+            # the very first op of every push failed on the bench (2026-09-08).
+            deadline = time.monotonic() + ack_timeout
+            verdict = None
+            while verdict is None and time.monotonic() < deadline:
+                reply = parse_frame(ser, deadline)
+                if reply is None:
+                    break
+                msg_type, body = reply
+                if msg_type == TYPE_RPC_RESPONSE:
+                    verdict = "ack"
+                elif msg_type == TYPE_ERROR_STATE:
+                    verdict = "busy" if (body and body[0] == IMPROV_ERROR_INVALID_OP) else "refused"
+                # anything else (CURRENT_STATE, ...) is chatter: keep waiting
+            if verdict == "ack":
+                break                              # next frame
+            if verdict == "busy":
+                time.sleep(0.15)                   # the previous op is still being applied
+                continue
+            return False                           # refused, or no ack within the timeout
+        else:
+            return False                           # busy for the whole retry budget
+    return True
+
+
+def apply_device_model(ser, entry: dict, name: str) -> int:
+    """Push a catalog entry as APPLY_OP ops; returns the number of ops that FAILED."""
+    ops = plan_config_ops(entry)
+    ser.reset_input_buffer()                 # stale state frames from provisioning are not acks
+    failed = 0
+    for op in ops:
+        label = {"clearChildren": lambda o: f"clearChildren {o['parent']}",
+                 "add":           lambda o: f"add {o['type']} as {o['id']} under {o['parent']}",
+                 "set":           lambda o: f"set {o['module']}.{o['control']} = {o['value']!r}"}[op["op"]](op)
+        ok = send_apply_op(ser, op)
+        print(f"    {'ok ' if ok else 'FAIL'} {label}")
+        failed += 0 if ok else 1
+    print(f"==> applied deviceModel {name!r}: {len(ops) - failed}/{len(ops)} ops ok")
+    return failed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--self-test", action="store_true",
@@ -222,9 +363,9 @@ def main() -> int:
     ap.add_argument("--device-model", dest="device_model", default=None, metavar="NAME",
                     help="deviceModel name from mooninstaller/deviceModels.json (e.g. "
                          "'ESP32-S3 N16R8 Dev'). Resolves the deviceModel's TX-power cap "
-                         "(controls.Network.txPowerSetting) automatically and "
-                         "pushes the name via SET_DEVICE_MODEL after "
-                         "provisioning — the same injection the web installer "
+                         "(controls.Network.txPowerSetting) automatically and, after "
+                         "provisioning, applies the entry's modules and controls over "
+                         "serial as APPLY_OP ops: the same config push the web installer "
                          "does. An explicit --tx-power overrides the lookup.")
     ap.add_argument("--tx-power", type=int, default=None, metavar="DBM",
                     help="Send the SET_TX_POWER vendor RPC (0..21 whole dBm) "
@@ -304,6 +445,8 @@ def main() -> int:
             args.tx_power = cap
             print(f"==> deviceModel {args.device_model!r}: TX-power cap {cap} dBm from deviceModels.json")
 
+    eth_only = bool(args.device_model) and is_eth_only(entry)
+
     try:
         ser = serial.Serial(args.port, baudrate=115200, timeout=0.1)
     except serial.SerialException as e:
@@ -315,7 +458,7 @@ def main() -> int:
             print(f"ERROR: --tx-power {args.tx_power} out of range 0..21", file=sys.stderr)
             return 2
         # SET_TX_POWER vendor RPC (0xFD): [cmd][data_len=1][dBm]. Mirrors
-        # SET_DEVICE_MODEL's framing; the firmware persists + applies it before the
+        # The firmware persists + applies it before the
         # association the credentials below will trigger. The 2.5 s pause lets
         # the module's 1 Hz consumer pick the cap up first.
         print(f"==> sending SET_TX_POWER {args.tx_power} dBm to {args.port}")
@@ -327,6 +470,51 @@ def main() -> int:
             print("==> warning: no SET_TX_POWER ack (old firmware?) — continuing",
                   file=sys.stderr)
         time.sleep(2.5)
+
+    # Ask before telling: a device that is ALREADY provisioned answers GET_CURRENT_STATE with
+    # PROVISIONED and never re-announces it for a second WIFI_SETTINGS, so a re-provision used
+    # to sit out the whole timeout and skip the config push that needs no provisioning at all.
+    # (The push works on any reachable device with the port open, the same as the browser's.)
+    ser.reset_input_buffer()
+    ser.write(build_frame(TYPE_RPC, bytes([CMD_GET_CURRENT_STATE, 0])))
+    ser.flush()
+    already_provisioned = False
+    probe_answered = False
+    probe_deadline = time.monotonic() + 3.0
+    while time.monotonic() < probe_deadline:
+        reply = parse_frame(ser, probe_deadline)
+        if reply is None:
+            break
+        probe_answered = True
+        if reply[0] == TYPE_CURRENT_STATE and reply[1] and reply[1][0] == 4:
+            already_provisioned = True
+            break
+    if not probe_answered:
+        # No Improv listener heard us. The common cause on QuinLED boards is not a fault: their
+        # catalog pins include GPIO 1/3 (UART0), so once the LED driver claims them a provisioned
+        # board can no longer RECEIVE over this port, and neither a re-provision nor a config push
+        # can reach it (use the device's web UI or the HTTP push instead). The credentials are
+        # still sent below in case this is a fresh board on firmware that ignores the probe.
+        print("==> warning: no answer to GET_CURRENT_STATE on this port (already provisioned with "
+              "the LED driver on the UART pins?); continuing, expect a timeout if so",
+              file=sys.stderr)
+    if eth_only and not already_provisioned:
+        print("==> Ethernet-only firmware: no WiFi to provision, connect the cable; pushing the config")
+        already_provisioned = True        # same path: the push needs only the open port
+    if already_provisioned:
+        print("==> device reports PROVISIONED already: keeping its WiFi credentials" if not eth_only
+              else "==> applying the catalog entry over serial")
+        if args.device_model:
+            print(f"==> applying deviceModel {args.device_model!r} over serial (APPLY_OP)")
+            failed = apply_device_model(ser, entry, args.device_model)
+            ser.close()
+            if failed:
+                print(f"ERROR: {failed} op(s) not applied; the device config is incomplete",
+                      file=sys.stderr)
+                return 1
+        else:
+            ser.close()
+        return 0
 
     print(f"==> sending WIFI_SETTINGS to {args.port} (SSID: {args.ssid!r})")
     payload = build_wifi_settings_payload(args.ssid, args.password)
@@ -369,15 +557,15 @@ def main() -> int:
             url = urls[0] if urls else "(no URL reported)"
             print(f"==> provisioned: {url}")
             if args.device_model:
-                # SET_DEVICE_MODEL vendor RPC (0xFE): [cmd][1+len][len][name] —
-                # the same post-provision push the web installer does, so
-                # the device persists its physical-board identity.
-                name = args.device_model.encode("utf-8")
-                ser.write(build_frame(TYPE_RPC,
-                                      bytes([0xFE, 1 + len(name), len(name)]) + name))
-                ser.flush()
-                time.sleep(0.5)   # let the device's serial task consume it
-                print(f"==> pushed SET_DEVICE_MODEL {args.device_model!r}")
+                # The catalog entry's modules + controls, over serial as APPLY_OP ops (the
+                # deviceModel name is just one of those controls: System.deviceModel).
+                print(f"==> applying deviceModel {args.device_model!r} over serial (APPLY_OP)")
+                failed = apply_device_model(ser, entry, args.device_model)
+                if failed:
+                    print(f"ERROR: {failed} op(s) not applied; the device is provisioned but "
+                          f"its config is incomplete", file=sys.stderr)
+                    ser.close()
+                    return 1
             ser.close()
             return 0
 

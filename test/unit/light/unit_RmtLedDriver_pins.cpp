@@ -272,9 +272,9 @@ TEST_CASE("RmtLedDriver slices the buffer across pins (even split)") {
     CHECK(d.pinLightCount(1) == 30);
     CHECK(d.pinLightCount(2) == 30);
     // Slice i starts at sumBefore(i) × outCh × 8 words.
-    CHECK(d.pinSymbolOffsetWords(0) == 0);
-    CHECK(d.pinSymbolOffsetWords(1) == static_cast<size_t>(30) * 3 * 8);
-    CHECK(d.pinSymbolOffsetWords(2) == static_cast<size_t>(60) * 3 * 8);
+    CHECK(d.pinFrameOffsetBytes(0) == 0);
+    CHECK(d.pinFrameOffsetBytes(1) == static_cast<size_t>(30) * 3);
+    CHECK(d.pinFrameOffsetBytes(2) == static_cast<size_t>(60) * 3);
 }
 
 TEST_CASE("RmtLedDriver slices the buffer per ledsPerPin") {
@@ -289,8 +289,8 @@ TEST_CASE("RmtLedDriver slices the buffer per ledsPerPin") {
     CHECK(d.pinLightCount(0) == 50);
     CHECK(d.pinLightCount(1) == 20);
     CHECK(d.pinLightCount(2) == 20);
-    CHECK(d.pinSymbolOffsetWords(1) == static_cast<size_t>(50) * 3 * 8);
-    CHECK(d.pinSymbolOffsetWords(2) == static_cast<size_t>(70) * 3 * 8);
+    CHECK(d.pinFrameOffsetBytes(1) == static_cast<size_t>(50) * 3);
+    CHECK(d.pinFrameOffsetBytes(2) == static_cast<size_t>(70) * 3);
 }
 
 TEST_CASE("RmtLedDriver idles with a status error on a bad pin list") {

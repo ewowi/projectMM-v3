@@ -375,3 +375,7 @@ TEST_CASE("ParlioLedDriver allocates a real host bus the driver can encode into"
 TEST_CASE("ParlioLedDriver gives the host bus two distinct buffers when asked") {
     mm::test::checkHostBusDoubleBuffer<mm::ParlioPeripheral>();
 }
+
+TEST_CASE("ParlioLedDriver counts the DMA buffers in its memory readout") {
+    mm::test::checkHostBusCountedInHeapReadout<mm::ParlioPeripheral>();
+}

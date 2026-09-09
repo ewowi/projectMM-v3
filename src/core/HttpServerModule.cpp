@@ -1549,13 +1549,20 @@ void HttpServerModule::serveSystem(platform::TcpConnection& conn) {
     // maxBlock = internal-only (maxInternalAllocBlock): the all-memory
     // variant reports ~8 MB on PSRAM boards and is meaningless as a
     // pressure signal. Same rationale as main.cpp's tick log line.
+    // `allocated` / `allocPeak` are what the system TOOK, which is the figure that means the same
+    // thing on a board and on a laptop: free heap does not, since a desktop has as much as it wants
+    // and reports 0. It is what makes a memory change measurable without hardware.
     sink.appendf(
-        "{\"fps\":%u,\"tickTimeUs\":%u,\"freeHeap\":%u,\"freeInternal\":%u,\"maxBlock\":%u,\"uptime\":%u,\"modules\":[",
+        "{\"fps\":%u,\"tickTimeUs\":%u,\"freeHeap\":%u,\"freeInternal\":%u,\"maxBlock\":%u,"
+        "\"allocated\":%u,\"allocPeak\":%u,\"allocBlocks\":%u,\"uptime\":%u,\"modules\":[",
         static_cast<unsigned>(scheduler_ ? scheduler_->fps() : 0),
         static_cast<unsigned>(scheduler_ ? scheduler_->tickTimeUs() : 0),
         static_cast<unsigned>(platform::freeHeap()),
         static_cast<unsigned>(platform::freeInternalHeap()),
         static_cast<unsigned>(platform::maxInternalAllocBlock()),
+        static_cast<unsigned>(platform::allocatedBytes()),
+        static_cast<unsigned>(platform::allocatedPeak()),
+        static_cast<unsigned>(platform::allocatedCount()),
         static_cast<unsigned>(scheduler_ ? scheduler_->elapsed() / 1000 : 0));
 
     // Per-module timing (walk tree recursively)
@@ -2970,6 +2977,16 @@ void HttpServerModule::pushStateToWebSockets() {
         if (stateSend_.active) return;
         JsonSink sink;
         buildStateJson(sink);
+        // A sink that ran out of heap holds a TRUNCATED document, and the frame header would declare
+        // it complete: the browser parses it, throws, and drops every module past the cut. Send it
+        // anyway, but CLEAR the resync flag first and say so. Returning early here instead looks
+        // safer and is worse: fullResyncPending_ stays set, the else-branch that pushes value
+        // patches is never reached, and the whole UI freezes (no fps, no heap, no live values) on a
+        // board where the state simply does not fit. A partial tree that keeps updating beats a
+        // whole one that never arrives. (Bench 2026-09-08, both classic boards.)
+        if (sink.overflowed()) {
+            setStatus("state too large for free memory: some modules may not show", Severity::Warning);
+        }
         const size_t len = sink.size();
         char* owned = sink.detach();   // move ownership to the sender (frees on drain-complete)
         if (owned && startBufferedTextSend(owned, len)) {

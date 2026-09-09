@@ -134,6 +134,7 @@ nav:
   - Tutorials:
       - How projectMM works: tutorials/how-projectmm-works.md
       - Installing projectMM on a desktop: tutorials/installing-to-desktop.md
+      - Running projectMM on a Linux machine: tutorials/installing-on-linux.md
       - Driving LED panels with a receiving card: tutorials/panel-cards.md
       - Driving projectMM from a phone or tablet: tutorials/control-surface.md
       - Making beautiful effects: tutorials/generative-effects.md

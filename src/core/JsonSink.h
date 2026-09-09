@@ -47,6 +47,7 @@ public:
         if (fixed_ && fixedCap_ > 0) fixed_[0] = '\0';
     }
 
+
     ~JsonSink() { if (heap_) platform::free(heap_); }
 
     JsonSink(const JsonSink&) = delete;
@@ -66,7 +67,11 @@ public:
                 fixed_[fixedLen_++] = *s++;
                 fixed_[fixedLen_] = '\0';
             } else {
-                if (!ensureHeap(heapLen_ + 1)) return;  // out of memory: drop
+                // Out of memory. Flag it exactly as the fixed-buffer path above does: a caller
+                // that ships the buffer anyway sends a TRUNCATED document, and a truncated JSON
+                // frame is indistinguishable from a whole one at the far end (the browser parses
+                // it, throws, and drops the tail: the module cards past the cut simply vanish).
+                if (!ensureHeap(heapLen_ + 1)) { overflowed_ = true; return; }
                 heap_[heapLen_++] = *s++;
             }
         }
@@ -225,17 +230,36 @@ private:
     }
 
     // Grow the heap buffer to hold at least `need` bytes plus a null terminator.
+    ///
+    /// Doubling is the right default (amortized O(1) appends), but the old and new buffers are both
+    /// live across the memcpy, so growing 16 KB to 32 KB asks for ~48 KB of CONTIGUOUS heap at once.
+    /// A classic ESP32 serving a 40 KB state document has the free bytes and not the block: the
+    /// allocation failed, every later append dropped, and the device shipped a truncated frame that
+    /// looked complete. So a refused doubling steps down toward the minimum rather than giving up:
+    /// slower to grow, and it fits where doubling cannot. (Measured on the bench 2026-09-08: both
+    /// classic boards cut their state at a power of two, losing 8-11 KB of the tree.)
     bool ensureHeap(size_t need) {
         if (need + 1 <= heapCap_) return true;
-        size_t newCap = heapCap_ == 0 ? 2048 : heapCap_ * 2;
-        while (newCap < need + 1) newCap *= 2;
-        char* grown = static_cast<char*>(platform::alloc(newCap));
-        if (!grown) return false;
-        if (heap_) { std::memcpy(grown, heap_, heapLen_); platform::free(heap_); }
-        heap_ = grown;
-        heapCap_ = newCap;
-        heap_[heapLen_] = 0;
-        return true;
+        size_t want = heapCap_ == 0 ? 2048 : heapCap_ * 2;
+        while (want < need + 1) want *= 2;
+        // Step down in QUARTERS of the current capacity rather than to `need + 1`. Backing off to the
+        // bare minimum serves this one append and then grows again on the next character, which is
+        // O(n^2) copying and thrashes exactly the fragmented heap that refused the doubling. A
+        // quarter still leaves useful headroom, so the next grow is thousands of appends away.
+        const size_t step = heapCap_ / 4 > 4096 ? heapCap_ / 4 : 4096;
+        const size_t floorCap = need + 1 > step ? need + 1 : step;
+        for (;;) {
+            if (char* grown = static_cast<char*>(platform::alloc(want))) {
+                if (heap_) { std::memcpy(grown, heap_, heapLen_); platform::free(heap_); }
+                heap_ = grown;
+                heapCap_ = want;
+                heap_[heapLen_] = 0;
+                return true;
+            }
+            if (want <= floorCap) return false;   // even a useful minimum is refused: genuinely out
+            const size_t next = want - step;
+            want = next < floorCap ? floorCap : next;
+        }
     }
 
     platform::TcpConnection* conn_ = nullptr;  // socket mode when non-null

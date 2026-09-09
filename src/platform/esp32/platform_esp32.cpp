@@ -216,6 +216,28 @@ void reboot() {
     esp_restart();
 }
 
+// The same three numbers the desktop counts by hand, from the allocator that already tracks them.
+// A scenario reads one metric on both platforms: how much the system has taken, its high-water
+// mark, and how many blocks are live. USED rather than free, so the figure means the same thing on
+// a board with 320 KB and a laptop with gigabytes.
+size_t allocatedBytes() {
+    multi_heap_info_t info = {};
+    heap_caps_get_info(&info, MALLOC_CAP_8BIT);
+    return info.total_allocated_bytes;
+}
+size_t allocatedPeak() {
+    // The minimum-ever free, expressed as a peak used: IDF tracks the low-water mark of free heap,
+    // which is the same fact from the other side.
+    const size_t total = heap_caps_get_total_size(MALLOC_CAP_8BIT);
+    const size_t minFree = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+    return total > minFree ? total - minFree : 0;
+}
+uint32_t allocatedCount() {
+    multi_heap_info_t info = {};
+    heap_caps_get_info(&info, MALLOC_CAP_8BIT);
+    return static_cast<uint32_t>(info.allocated_blocks);
+}
+
 size_t freeHeap() {
     return heap_caps_get_free_size(MALLOC_CAP_8BIT);
 }

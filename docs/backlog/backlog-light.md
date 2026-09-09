@@ -41,8 +41,19 @@ What it does NOT address: on the classic ESP32 the DMA half compiles to nothing,
 moves the channel's interrupt off core 0 (the root cause found on the Dig-Next-2, fixed by
 creating the channel from core 1). The two are complementary, one driver with the right answer
 per chip: DMA where the silicon has it, the core-1 refill where it does not. Adopt his DMA and
-callback path, keep the core hop, and drop the classic-only `txInFlight_` guard where his busy
-flag covers it. Study, do not copy: write it against the seam as it stands, credit the branch.
+callback path and keep the core hop. Study, do not copy: write it against the seam as it stands,
+credit the branch.
+
+Re-read against the wire-byte driver (2026-09-09), which changed two of the assumptions above. The
+driver no longer holds pre-expanded symbols at all: it ships the correction's wire bytes and the
+peripheral expands them (IDF bytes encoder on the DMA chips, the level-5 refill on classic), so the
+frame buffer is ~3 bytes per light rather than 96. So (a) his `mem_block_symbols = 1024` is now the
+only symbol memory in play and is cheap, and (b) `rmt_transmit` already takes the bytes, so the DMA
+path needs no buffer change, only `flags.with_dma` plus the callback. The `txInFlight_` guard STAYS
+whatever happens: the peripheral streams straight out of the driver's frame buffer, so a rebuild
+that frees it mid-frame still tears; his busy flag would replace the blocking wait, not that guard.
+The win left on the table is the blocking `rmtWs2812Wait` on S3/P4, which today costs the tick the
+whole wire time of the longest strand.
 
 ### A script's setControl rebuilds a control subtree on every write (2026-09-06)
 
@@ -217,6 +228,23 @@ A recurring idea is to "borrow from direct mode": direct mode streams a huge fra
 The bandwidth arithmetic (datasheet-derived): DMA demand = bus-bytes × pclk. Direct 8/16-bit = 2.67/5.33 MB/s; shift 8/16-bit = **26.7 / 53.3 MB/s**. S3 OPI PSRAM (octal, 80 MHz DDR) is 160 MB/s *theoretical* but only **~40–84 MB/s sustained/contended** in practice (Espressif's external-RAM guide: DMA-to-PSRAM bandwidth "is very limited, especially when the core is trying to access external RAM at the same time"; PSRAM shares the flash cache region). So direct demand sits far under the floor (streams fine — proven), while shift 16-bit demand *exceeds* the ~40 MB/s contended floor and shift 8-bit sits inside the underrun zone once WiFi/HTTP/CPU cache traffic competes. Because WS2812 is one unbroken self-clocked stream, one FIFO underrun garbles the rest of the frame. This is **datasheet-consistent with**, and MEASURED to match, ADR-0014's controlled A/B (board B, same PSRAM/chain, only the clock varied: 2.67 MHz PSRAM drives, 26.67 MHz PSRAM never completes at any size) and the 2026-07-16 `forceRing` re-confirmation (whole-frame at 2880 stalls). **Proven:** the effect (PSRAM stalls at the shift clock, drives at the direct clock). **Not instrumented (needs a bench measurement if ever doubted):** the exact mechanism — contended-sustained-rate FIFO underrun vs PSRAM read latency vs cache/MMU contention — was inferred from the clock being the sole variable, never isolated with underrun/bandwidth counters.
 
 **Conclusion — this does not open a new path; the proper ring fix already is the path.** The internal-RAM footprint of the ring is NOT set by light count: the ring transposes from a PSRAM-resident source into a small fixed internal buffer pool, so PSRAM is never on the DMA's read path at all. The 240-light wall is the `kRingBufs=16` no-reuse stopgap (the wrap read-while-write race), NOT the ring's design — and "more buffers" is a confirmed dead end. The shipped ring (above) holds internal RAM constant at arbitrary light count, which is exactly the "unlimited lights/strand" the PSRAM-hybrid idea was reaching for — obtained the correct way, at the mandatory shift clock, without PSRAM on the read path. **Action: none — the ring shipped; the "lower shift pclk + PSRAM whole-frame" hybrid is closed as physically blocked and should not be re-attempted.** (If the mechanism is ever contested, the one bench measurement worth doing is registering GDMA underrun/FIFO-empty counters at 26.67 MHz whole-frame-PSRAM to distinguish underrun from latency — but it would not change the conclusion.)
+
+### The ring's memory readout counts one buffer, not the pool (CodeRabbit, 2026-09-09)
+
+`ParallelLedDriver::driverHeapBytes()` derives its DMA figure from `peripheral_->busCapacity()`,
+which is `st->cap`: the size of ONE buffer. It then adds a second when `busBuffer(1)` exists, which
+is right for the double-buffered path and wrong for the ring, where `createRingState` allocates
+`ringBufs` slices (up to 30 at the 48x256 geometry) plus the shared zero-pad. So a ring board
+under-reports its DMA memory by roughly the buffer count, on the card that exists to make exactly
+that number visible.
+
+Not a correctness bug: the memory is spent either way, and nothing sizes an allocation from this
+value. It is a reporting bug in the one readout a user consults before adding lights.
+
+**What it takes:** an aggregate size on the peripheral (the ring knows `ringBufs * bufBytes + pad`
+at creation) rather than arithmetic in the driver, which cannot see the pool. Wants a ring-mode
+accounting test alongside, since the existing ones only cover the non-ring path. Touching
+`createRingState` means a bench pass on the wall, which is why this is its own change.
 
 ### MoonI80 ring — boot / first-frame-after-rebuild trips a transient give-up status (2026-07-16)
 
@@ -447,7 +475,7 @@ where upscaling has the least to offer.
 
 **The fix when it earns its place:** iterate the OUTPUT rows rather than the input lights, so
 writes are sequential: for each output row, walk its source row once and emit `scale` copies of
-each light's colour, then `memcpy` that finished row to the remaining `scale - 1` rows of the
+each light's color, then `memcpy` that finished row to the remaining `scale - 1` rows of the
 block. Same output, one pass through the destination in address order.
 
 ### Sprite follow-ups (draw::sprite + FlyingToasters shipped; spec + plan in the plans archive)
@@ -489,16 +517,26 @@ a codec. So the three things a Tab5 could be are separate pieces of work, and on
 
 ### Multi-card walls — does a daisy chain work today? (open, ask before building)
 
-The ColorLight format has **no card addressing**: the destination MAC is a fixed constant and every card filters on it, so every card on a segment shows the same image. A user with six cards on a switch observed exactly that.
+The ColorLight format has **no card addressing in the PIXEL path**: the destination MAC is a fixed
+constant and every card filters on it, so every card on a segment shows the same image. A user with
+six cards on a switch observed exactly that.
 
-The industry-standard answer is **daisy-chaining** — a sending card's ports each drive a chain, and each card takes its region by position in the chain. That user works around it with per-card VLANs and a managed switch instead, which he built for throughput and for per-card colour-temperature grouping across mixed panel batches; he described it as his own solution, not a standard.
+The DISCOVERY path does distinguish them. A discovery reply (0x08) carries a controller number at
+payload offset 0x62, and the acknowledgement echoes it plus one, which is how a sender tells several
+cards apart. Documented by a reader of [Harald Kubota's protocol
+write-up](https://hkubota.wordpress.com/2022/01/31/winter-project-colorlight-5a-75b-protocol/) and
+confirmed by its author. That is an identity, not a destination: it does not let a sender aim pixel
+data at one card, so the same-image behavior above stands. It is what a per-card brightness or
+color-temperature feature below would key on.
+
+The industry-standard answer is **daisy-chaining** — a sending card's ports each drive a chain, and each card takes its region by position in the chain. That user works around it with per-card VLANs and a managed switch instead, which he built for throughput and for per-card color-temperature grouping across mixed panel batches; he described it as his own solution, not a standard.
 
 **Establish first whether a daisy chain already works with projectMM** (one contact has a 96K daisy-chained rig). If the cards self-assign by chain position, the standard multi-card case is already solved and nothing is needed. Only if it does not work is there a feature here, and it should follow the daisy-chain standard rather than the VLAN workaround. 802.1Q tagging is technically a clean fit for a raw-L2 sender (the tag is part of the Ethernet header, the switch strips it before the card, so card firmware is unaffected), but it serves one bespoke architecture.
 
 ### Smaller asks from the same thread
 
 - **Read the wall layout from the ColorLight cards.** The cards can report their configuration and at least one user's own tool already does it; it would remove the manual layout step.
-- **Per-card colour temperature and brightness**, via the ColorLight sync-packet bytes, grouped by sync group — used to colour-match mixed panel batches live.
+- **Per-card color temperature and brightness**, via the ColorLight sync-packet bytes, grouped by sync group — used to color-match mixed panel batches live.
 - **Docker image**, asked for by a user tracking updates in an IoT system. The Linux binary and `.deb` already ship, so this is packaging rather than new capability.
 
 ## Sensors and audio-reactive input
@@ -867,3 +905,74 @@ index on load, so a stored selection survives a re-sort. `paletteScript` already
 file name for the editor, so the value exists; what is missing is using it as the authority when the
 list changes. The alternative, appending new scripts rather than sorting them, keeps indices stable
 but makes the picker unreadable as the list grows, which is the trade the sort was chosen over.
+
+## Move the remaining board entries off RmtLedDriver (2026-09-08)
+
+**Superseded on 2026-09-09, and the memory half of this item no longer applies.** `RmtLedDriver`
+now ships the correction's WIRE BYTES and lets the peripheral expand them (the IDF bytes encoder on
+the DMA chips, the level-5 refill on classic), so its buffer is `lights x channels` = 3 bytes per
+RGB light and 4 for RGBW, flat in the expansion. Bench, Dig-Next-2 at 1,024 lights: 3,075 bytes
+against 98,307 under the old form, a 32x cut. Dig-2-Go at 341 lights: 32,772 bytes to 1,028, which
+handed 33 KB of internal RAM back to the system. The crossover below is therefore gone,
+RMT is now the cheaper driver at every light count, and the reason to move a board off it is
+throughput or pin count rather than memory.
+
+The rest of this entry is kept as the record of why the swaps that were already made were made.
+
+Historically `RmtLedDriver` expanded every bit into a 32-bit hardware symbol, so its buffer cost
+`lights x channels x 8 x 4`: **96 bytes per RGB light, 128 for a 4-channel RGBW or GRBW preset**,
+since `channels` is the preset's output width rather than a constant.
+`ParallelLedDriver` bit-bangs the lanes through one I2S/LCD_CAM transfer and costs **384 bytes
+flat**, independent of pin count and light count. Measured on the bench, same hardware and same
+light count either side:
+
+| Board | Lights | RmtLed | ParallelLed | FPS |
+|---|---|---|---|---|
+| QuinLED Dig-Octa 32-8L (8 pins) | 512 | 49,155 B | 384 B | 99 to 407 |
+| QuinLED Dig-Next-2 (.186 vs .122) | 256 | 24,579 B | 384 B | - |
+
+On a classic ESP32 with ~320 KB of internal DRAM that is the difference between 24 KB and 61 KB of
+largest contiguous block, which is what a large allocation actually fails on.
+
+Both those entries are switched. **Twenty entries still specify `RmtLedDriver`**, and most of them
+should stay that way: measured on the QuinLED Dig-2-Go (one lane, 256 lights, no PSRAM), the swap
+CUT the driver's own readout from 32,772 to 512 bytes and LOST 49 KB of free heap (96,552 to
+47,156, steady after a reboot). The i80 DMA frame is sized by the bus width, not the pins in use, so
+a one-lane board pays the same ~50 KB as an eight-lane one, while RMT cost 96 bytes per RGB light
+(128 for RGBW). The crossover was around 500 RGB lights, and lower for a 4-channel preset. (That
+fixed frame was invisible on the card until `driverHeapBytes()` started counting it.) Both numbers
+are historical: see the note at the top of this entry.
+
+For the boards where it does pay, the blocker is not the driver: it is that each one needs a **DC
+pin chosen against that board's real pinout**, and picking one blind is how a peripheral lands on a
+pad the package does not have ([lessons](../history/lessons.md), PICO-V3-02: silent TG1WDT, PC at
+panicHandler).
+
+**Two cost classes, and they differ by chip.** On a classic ESP32 only DC costs a GPIO: WR is routed
+through the GPIO matrix to SENSOR_VP (36), bonded on every classic package and driving nothing, so
+`clockPin` can stay -1. On S3 / P4 / S31 the LCD_CAM backend needs a real pad for **both** WR and DC
+(`platform_esp32_i80.cpp`), so those boards pay two pins for a saving that is small at one lane.
+
+**What each board needs**, in order: find a free output-capable GPIO for DC (avoiding strapping
+0/2/5/12/15, flash 6-11, input-only 34-39, and whatever the entry already spends on Ethernet, relays,
+audio or buttons); set it on real hardware and confirm the lights still run; then fold the verified
+values into `deviceModels.json`. Step two is the one that counts, and it is why this is a per-board
+job rather than a sweep.
+
+- **Classic, one free GPIO needed (13):** Dig-Quad V3, Dig-Uno V3, Cube 2020-10 (10 pins, the
+  largest RMT saving left), MHC V4.3, MHC V5.7 PRO, ESP32-WROVER, Dig-2-Go, Serg MiniShield, Serg
+  UniShield V5, Yves V4.8, MM testbench ESP32-16MB, MM testbench classic olimex. Shelly is on the
+  list but is the read-only old-firmware rig, so it changes only with the product owner's say-so.
+- **S3 / S31, two free GPIOs needed (4):** ESP32-S3 N16R8 Dev, ESP32-S3-Zero (N4R2), MM testbench S3,
+  Espressif ESP32-S31 CoreBoard. Worth checking the saving is worth two pins at one lane before
+  switching these.
+- **No pins defined (3):** Generic ESP32 Dev, LOLIN D32, Olimex ESP32-Gateway Rev G. The user supplies
+  pins, so the default driver matters less and they still have to supply DC.
+
+Open question for the boards nobody physically has: propose a DC pin from the vendor pinout and mark
+the entry unverified, or leave them on RMT until someone can test one. RMT stays correct either way,
+it is only more expensive.
+
+Two things to fix while in here: **ESP32-S3-Zero (N4R2) defines both** a `ParallelLedDriver` (pin 2)
+and an `RmtLedDriver` (pin 21), and **MM testbench S3 defines two `RmtLedDriver`s** (pins 38 and 18).
+Both may be deliberate (independent outputs), but they are the only entries shaped that way.

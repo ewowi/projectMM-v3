@@ -73,8 +73,14 @@ constexpr size_t COLORLIGHT_ROW_PREFIX = COLORLIGHT_DATA_OFFSET + COLORLIGHT_ROW
 constexpr uint16_t COLORLIGHT_MAX_PIXELS_PER_PACKET = 497;
 constexpr uint8_t COLORLIGHT_BYTES_PER_PIXEL = 3;
 
-// Largest frame built: 21 + 497×3 = 1512 bytes. Above the 1500-byte MTU on purpose — these are raw
+// Largest frame built: 21 + 497x3 = 1512 bytes. Above the 1500-byte MTU on purpose: these are raw
 // L2 frames on a dedicated link to dumb receivers, never IP packets a router would fragment.
+//
+// FPP packs rows the same way. Harald Kubota's write-up sends 128 pixels per packet instead (391
+// bytes), which stays inside the MTU: both work against the cards, and the larger packet is fewer
+// frames for the same wall. Worth knowing if a wall ever goes dark through a SWITCH that will not
+// pass a 1512-byte frame, since nothing in the path reports that: the card simply never sees a row
+// and its activity LED stays still, which looks exactly like a transmit path that is not running.
 constexpr size_t COLORLIGHT_MAX_FRAME =
     COLORLIGHT_ROW_PREFIX + COLORLIGHT_MAX_PIXELS_PER_PACKET * COLORLIGHT_BYTES_PER_PIXEL;  // 1512
 

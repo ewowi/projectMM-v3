@@ -75,6 +75,11 @@ public:
         if (p) p->attach(this);
     }
 
+    /// Push the heap total to the module readout. Production calls this from the alloc/free sites
+    /// (publishHeapBytes); a test that drives a mock peripheral's busInit directly has no such site,
+    /// so it asks for the recompute here and then asserts the PUBLIC dynamicBytes() the card shows.
+    void publishHeapBytesForTest() { publishHeapBytes(); }
+
     // --- Peripheral backend registry ---
     // The set of peripheral backends compiled into THIS build. Each backend header self-registers its
     // factory + label at static-init, via an `inline const bool kXxxPeripheralRegistered =
@@ -169,9 +174,10 @@ public:
     /// SIMULTANEOUSLY, fed consecutive slices of this driver's window. A token may be a single pin or an
     /// inclusive range ("20-23" → 20,21,22,23), mixing freely ("20-22,35,38-40"). Shared control shape with
     /// RmtLedDriver (parsers in PinList.h). Defaults live on the derived (chip-specific safe pins),
-    /// so the derived sets them after construction; the base just declares them. i80 needs exactly
-    /// 8 OR 16 real pins (a partial bus is rejected — a sub-16 board parks unused lanes + WR/DC on
-    /// spare GPIOs); Parlio runs on 1..16. Sized for 16 two-digit GPIOs + separators.
+    /// so the derived sets them after construction; the base just declares them. Both backends take
+    /// 1..16 pins: the i80 BUS WIDTH rounds to 8 or 16 (powerOfTwoBus) and parks the unused lanes plus
+    /// WR/DC on spare GPIOs, which is invisible to the pin list; Parlio's width is the pin count, so
+    /// nothing rounds. Sized for 16 two-digit GPIOs + separators.
     char pins[64] = "";
     /// Comma-separated lights-per-lane; the unassigned remainder splits evenly over the remaining
     /// lanes. **A lane is a STRAND, not a pin** — which only differ through the expander: direct
@@ -713,8 +719,8 @@ public:
     void tick1s() MM_NONBLOCKING override {
         if (!peripheral_) return;
         // A bus that lost a shared peripheral to another module comes back on its own once that
-        // module lets go. On the classic ESP32 the i80 bus and a PDM microphone both need I2S0, so
-        // whichever asks second is refused; without this the loser stayed dark until the user
+        // module lets go. On the classic ESP32 the LED bus is an I2S peripheral and drives from
+        // instance 1, so whichever asks second is refused; without this the loser stayed dark until the user
         // happened to edit a control, which is a reboot-to-apply in all but name (architecture.md,
         // live reconfiguration). Gated tightly, because this runs on the render thread: only while
         // the driver WANTS the bus and does not hold it, and only when the backend says the thing
@@ -1378,10 +1384,29 @@ protected:
     size_t   snapshotCap_ = 0;            // allocated capacity, grows to fit the window
 
     /// This driver's heap = the base scratch + the streaming snapshot (the ring's immutable frame copy,
-    /// the biggest single driver buffer at ~36 KB). Summed for the per-module memory readout — see
-    /// DriverBase::driverHeapBytes. The DMA ring buffers are platform-owned (not driver heap), so they
-    /// are not counted here.
-    size_t driverHeapBytes() const override { return DriverBase::driverHeapBytes() + snapshotCap_; }
+    /// the biggest single driver buffer at ~36 KB) + the peripheral's DMA buffers. Summed for the
+    /// per-module memory readout (see DriverBase::driverHeapBytes).
+    ///
+    /// The DMA buffers are allocated by the PLATFORM rather than by this driver, and they used to be
+    /// left out on that ownership argument. That made the readout lie about the thing a user actually
+    /// decides on: the i80 frame is sized by the BUS WIDTH (8 or 16 lanes) and not by the pins in use,
+    /// so a one-lane board pays the same ~50 KB as an eight-lane one. On the bench (2026-09-08) a
+    /// QuinLED Dig-2-Go showed 512 bytes for this driver against RmtLedDriver's 32 KB while actually
+    /// costing 49 KB MORE free heap, and nothing on the card said so. Ownership is the wrong question
+    /// for a memory readout: what the user needs is what choosing this driver costs.
+    size_t driverHeapBytes() const override {
+        size_t dma = 0;
+        if (peripheral_) {
+            const size_t cap = peripheral_->busCapacity();
+            // Count the buffers that EXIST, not the ones `doubleBuffer` asks for: the control
+            // defaults on, a peripheral may refuse the second allocation (or not support it at
+            // all), and a readout that trusts the request over the allocation reports memory the
+            // board never spent.
+            dma = cap;
+            if (peripheral_->busBuffer(1)) dma += cap;
+        }
+        return DriverBase::driverHeapBytes() + snapshotCap_ + dma;
+    }
     // The snapshot copy's inputs, set before copyRange runs. The snapshot is serial (on the ring's core-1
     // tick); only the ring PRIME still forks to the core-0 helper (busTransmitRing), so no cross-core copy
     // bounds live here.

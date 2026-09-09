@@ -22,17 +22,19 @@ The output/RS-485 terminals, left to right, with the P4 GPIO each carries:
 
 ### 12x outputs — level-shifted, single-ended (LED data)
 
-The LED-data outputs. Each terminal is `O<gpio>` on the silkscreen; a level shifter drives the 5 V strand from the P4's 3.3 V. The catalog wires the Parallel LED driver (peripheral `Parlio`) to the first eight (`21,20,25,5,22,23,24,27`).
+The LED-data outputs. Each terminal is `O<gpio>` on the silkscreen; a level shifter drives the 5 V strand from the P4's 3.3 V. The catalog wires the Parallel LED driver (peripheral `Parlio`) to the **first eight terminals in physical order**: `21,20,25,5,7,23,8,27`.
+
+**The first eight terminals are not the eight lowest-numbered outputs.** Positions 5 and 7 carry GPIO **7** and **8**, not 22 and 24. An earlier version of this table listed `O22`/`O24` in those positions and the catalog followed it, so a strip on terminals 5 and 7 stayed dark while GPIO 22/24 emitted on their RS-485 terminals instead (bench 2026-09-08: two panels of eight unlit, fixed by moving lanes 4 and 6 to GPIO 7/8).
 
 | Terminal | GPIO | Note |
 |---|---|---|
-| O21 O20 O25 O5 O22 O23 O24 O27 | 21 20 25 5 22 23 24 27 | LED lanes (Parallel LED, peripheral `Parlio`, default) |
-| O7 / O8 | 7 / 8 | also the I²C bus (SDA 7 / SCL 8, catalog I2cScan) |
+| O21 O20 O25 O5 O7 O23 O8 O27 | 21 20 25 5 7 23 8 27 | LED lanes (Parallel LED, peripheral `Parlio`, default), in terminal order |
+| O7 / O8 | 7 / 8 | ALSO the I²C bus (SDA 7 / SCL 8). Driving them as LED lanes means no I²C on this shield, which is why the catalog entry carries no I2cScan module. To get I²C back: move those two strands to `O22`/`O24` **and** set the driver's `pins` to `21,20,25,5,22,23,24,27` to match. Rewiring alone leaves the lanes still driving 7/8. |
 | O3 | 3 | also on RS-485 (`A-3-B`) — see note below |
 | O4 | 4 | also on RS-485 (`A-4-B`) — see note below |
 | GND | — | ground for the output block |
 
-> **GPIO 3, 4, 22, 24 each appear TWICE** — once here (level-shifted single-ended output, `O<n>`) and once in the RS-485 block (`A-<n>-B`). It's the *same* P4 GPIO fanned out to two output forms: driving the pin lights up **both** its `O<n>` terminal and its `A-<n>-B` transceiver at once. Wire to whichever form you need. GPIO 21/20/25/5/23/27 have **only** the level-shifted path (no RS-485), which is why the LED-driver default uses those + 22/24 for strips and leaves 3/4 free.
+> **GPIO 3, 4, 22, 24 each appear TWICE**: once here (level-shifted single-ended output, `O<n>`) and once in the RS-485 block (`A-<n>-B`). It's the *same* P4 GPIO fanned out to two output forms: driving the pin lights up **both** its `O<n>` terminal and its `A-<n>-B` transceiver at once. Wire to whichever form you need. GPIO 21/20/25/5/23/27 have **only** the level-shifted path (no RS-485). The LED-driver default uses those six plus **7 and 8** (the first eight terminals in physical order, per the table above), leaving 3/4/22/24 for RS-485. Moving the two strands off 7/8 to `O22`/`O24` is what frees I²C, and it needs the driver's `pins` changed to match: the terminals are wired, the lane list is not.
 
 ### 4x RS-485 — differential A/B pairs (range extender + DMX)
 

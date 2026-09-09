@@ -41,7 +41,7 @@ namespace mm {
 /// Bus bit L = the L-th entry of the driver's `pins` list (D0 = first pin).
 /// Bits go MSB-first per byte; channel order (GRB, …) is already applied by
 /// Correction before the encode, so the encoder is order-agnostic (same
-/// contract as encodeWs2812Symbols).
+/// contract the RMT driver's wire bytes follow).
 ///
 /// The data slot is an 8×8 BIT-MATRIX TRANSPOSE: 8 lane bytes (rows) → 8 bus
 /// bytes (one per data bit, the columns), byte b bit L = lane L's bit b. This
